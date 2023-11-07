@@ -407,9 +407,23 @@ DINITCTL_API dinitctl_t *dinitctl_open_fd(int fd) {
 }
 
 DINITCTL_API void dinitctl_close(dinitctl_t *ctl) {
+    /* finish processing what we can */
+    bleed_queue(ctl);
+    /* then close the associated stuff */
     close(ctl->fd);
     free(ctl->read_buf);
     free(ctl->write_buf);
+    /* free any remaining allocated ops */
+    while (ctl->op_avail) {
+        struct dinitctl_op *next = ctl->op_avail->next;
+        free(ctl->op_avail);
+        ctl->op_avail = next;
+    }
+    while (ctl->op_queue) {
+        struct dinitctl_op *next = ctl->op_queue->next;
+        free(ctl->op_queue);
+        ctl->op_queue = next;
+    }
     free(ctl);
 }
 
