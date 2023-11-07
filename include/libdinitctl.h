@@ -352,6 +352,48 @@ DINITCTL_API int dinitctl_get_service_status_async(dinitctl_t *ctl, dinitctl_ser
  */
 DINITCTL_API int dinitctl_get_service_status_finish(dinitctl_t *ctl, int *state, int *target_state, pid_t *pid, int *flags, int *stop_reason, int *exec_stage, int *exit_status);
 
+/** @brief Set the trigger value of a service.
+ *
+ * Synchronous variant of dinitctl_set_service_trigger_async().
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param trigger The trigger value.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_set_service_trigger(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool trigger);
+
+/** @brief Set the trigger value of a service.
+ *
+ * This sets or unsets whether a service is triggered, depending on the
+ * given value.
+ *
+ * This API may only fail with ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param trigger The trigger value.
+ * @param cb The callback.
+ * @param data The data to pass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_set_service_trigger_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool trigger, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish setting trigger value.
+ *
+ * Invoked from the callback to dinitctl_set_service_trigger_async().
+ *
+ * May fail with DINITCTL_ERROR recoverably, or with EBADMSG (protocol error)
+ * unrecoverably.
+ *
+ * @param ctl The dinitctl.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_set_service_trigger_finish(dinitctl_t *ctl);
+
 /** @brief Set an environment variable in the dinit environment.
  *
  * Synchronous variant of dinitctl_setenv_async().

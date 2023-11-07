@@ -827,6 +827,79 @@ DINITCTL_API int dinitctl_get_service_status_finish(
     return DINITCTL_SUCCESS;
 }
 
+static void trigger_cb(dinitctl_t *ctl, void *data) {
+    *((int *)data) = dinitctl_set_service_trigger_finish(ctl);
+}
+
+DINITCTL_API int dinitctl_set_service_trigger(
+    dinitctl_t *ctl, dinitctl_service_handle_t handle, bool trigger
+) {
+    int ret;
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    if (dinitctl_set_service_trigger_async(
+        ctl, handle, trigger, &trigger_cb, &ret
+    ) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret;
+}
+
+static int trigger_check(dinitctl_t *ctl) {
+    return (ctl->read_size < 1);
+}
+
+DINITCTL_API int dinitctl_set_service_trigger_async(
+    dinitctl_t *ctl,
+    dinitctl_service_handle_t handle,
+    bool trigger,
+    dinitctl_async_cb cb,
+    void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, 2 + sizeof(handle), true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = DINIT_CP_SETTRIGGER;
+    memcpy(&buf[1], &handle, sizeof(handle));
+    buf[1 + sizeof(handle)] = (char)trigger;
+
+    qop->check_cb = &trigger_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_set_service_trigger_finish(dinitctl_t *ctl) {
+    char c = ctl->read_buf[0];
+    consume_recvbuf(ctl, 1);
+
+    if (c == DINIT_RP_ACK) {
+        return DINITCTL_SUCCESS;
+    } else if (c == DINIT_RP_NAK) {
+        return DINITCTL_ERROR;
+    }
+
+    errno = ctl->errnov = EBADMSG;
+    return -1;
+}
+
 static void setenv_cb(dinitctl_t *ctl, void *data) {
     *((int *)data) = dinitctl_setenv_finish(ctl);
 }
@@ -940,9 +1013,6 @@ TODO:
 
 /* Query status of an individual service */
 #define DINIT_CP_SERVICESTATUS 18
-
-/* Set trigger value for triggered services */
-#define DINIT_CP_SETTRIGGER 19
 
 /* Retrieve buffered output */
 #define DINIT_CP_CATLOG 20
