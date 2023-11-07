@@ -91,6 +91,111 @@ static void queue_op(dinitctl_t *ctl, struct dinitctl_op *op) {
     ctl->op_last = op;
 }
 
+static inline size_t status_buffer_size(void) {
+    size_t bsize = 8;
+    if (sizeof(pid_t) > sizeof(int)) {
+        bsize += sizeof(pid_t);
+    } else {
+        bsize += sizeof(int);
+    }
+    return bsize;
+}
+
+static void fill_status(
+    char *buf,
+    int *state,
+    int *target_state,
+    pid_t *pid,
+    int *flags,
+    int *stop_reason,
+    int *exec_stage,
+    int *exit_status
+) {
+    int sreason, flgs;
+    uint16_t stage;
+
+    if (state) {
+        *state = *buf;
+    }
+    ++buf;
+    if (target_state) {
+        *target_state = *buf;
+    }
+    ++buf;
+
+    flgs = *buf++;
+    if (flags) {
+        *flags = flgs;
+    }
+    sreason = *buf++;
+    if (stop_reason) {
+        *stop_reason = sreason;
+    }
+
+    /* only under specific circumstances but we have to read it anyway */
+    memcpy(&stage, buf, sizeof(stage));
+    buf += sizeof(stage);
+
+    if (flgs & DINITCTL_SERVICE_FLAG_HAS_PID) {
+        if (pid) {
+            memcpy(pid, buf, sizeof(*pid));
+        }
+    } else {
+        if (sreason == DINITCTL_SERVICE_STOP_REASON_EXEC_FAILED) {
+            if (exec_stage) {
+                *exec_stage = stage;
+            }
+        }
+        if (exit_status) {
+            memcpy(exit_status, buf, sizeof(*exit_status));
+        }
+    }
+}
+
+static int event_check(dinitctl_t *ctl) {
+    if (ctl->read_size < 1) {
+        return 1;
+    }
+    if (ctl->read_buf[0] == DINIT_IP_SERVICEEVENT) {
+        if (ctl->read_size < 1) {
+            return 1;
+        }
+        char psz = ctl->read_buf[1];
+        if (ctl->read_size < (size_t)psz) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void event_cb(dinitctl_t *ctl, void *data) {
+    (void)data;
+    if (ctl->read_buf[0] != DINIT_IP_SERVICEEVENT) {
+        errno = ctl->errnov = EBADMSG;
+        return;
+    }
+    if (ctl->sv_event_cb) {
+        char *buf = &ctl->read_buf[2];
+        dinitctl_service_handle_t handle;
+        int sv_event, state, target_state;
+        int flags, stop_reason, exec_stage, exit_status;
+        pid_t pid;
+        memcpy(&handle, buf, sizeof(handle));
+        buf += sizeof(handle);
+        sv_event = *buf++;
+        fill_status(
+            buf, &state, &target_state, &pid, &flags,
+            &stop_reason, &exec_stage, &exit_status
+        );
+        ctl->sv_event_cb(
+            ctl, handle, sv_event,
+            state, target_state, pid, flags, stop_reason,
+            exec_stage, exit_status, ctl->sv_event_data
+        );
+    }
+    consume_recvbuf(ctl, ctl->read_buf[1]);
+}
+
 DINITCTL_API int dinitctl_dispatch(dinitctl_t *ctl, int timeout, bool *ops_left) {
     struct pollfd pfd;
     ssize_t ss;
@@ -204,17 +309,19 @@ DINITCTL_API int dinitctl_dispatch(dinitctl_t *ctl, int timeout, bool *ops_left)
     ops = 0;
     while (ctl->op_queue) {
         struct dinitctl_op *op = ctl->op_queue;
-        /* discard information packet if present */
-        if (ctl->read_buf[0] >= 100) {
-            if (
-                (ctl->read_size <= 1) ||
-                ((size_t)ctl->read_buf[1] > ctl->read_size)
-            ) {
-                /* broken message */
-                errno = EBADMSG;
+        /* process service events; this involves queuing an event ahead
+         * of everything else so it's processed with the data bytes
+         */
+        if ((ctl->read_buf[0] >= 100) && (op->check_cb != &event_check)) {
+            struct dinitctl_op *nop = new_op(ctl);
+            if (!nop) {
                 return -1;
             }
-            consume_recvbuf(ctl, ctl->read_buf[1]);
+            nop->check_cb = &event_check;
+            nop->do_cb = &event_cb;
+            nop->do_data = NULL;
+            nop->next = op;
+            op = ctl->op_queue = nop;
         }
         int chk = op->check_cb(ctl);
         if (chk < 0) {
@@ -379,6 +486,8 @@ DINITCTL_API dinitctl_t *dinitctl_open_fd(int fd) {
     ctl->read_cap = ctl->write_cap = CTLBUF_SIZE;
     /* erase remaining fields */
     ctl->op_queue = ctl->op_last = ctl->op_avail = NULL;
+    ctl->sv_event_cb = NULL;
+    ctl->sv_event_data = NULL;
 
      /* before readying, query version */
     qop = new_op(ctl);
@@ -429,6 +538,13 @@ DINITCTL_API void dinitctl_close(dinitctl_t *ctl) {
 
 DINITCTL_API int dinitctl_get_fd(dinitctl_t *ctl) {
     return ctl->fd;
+}
+
+DINITCTL_API void dinitctl_set_service_event_callback(
+    dinitctl_t *ctl, dinitctl_service_event_cb cb, void *data
+) {
+    ctl->sv_event_cb = cb;
+    ctl->sv_event_data = data;
 }
 
 struct load_service_ret {
@@ -632,22 +748,12 @@ DINITCTL_API int dinitctl_get_service_status(
     return ret.code;
 }
 
-static inline size_t service_status_buffer_size(void) {
-    size_t bsize = 8;
-    if (sizeof(pid_t) > sizeof(int)) {
-        bsize += sizeof(pid_t);
-    } else {
-        bsize += sizeof(int);
-    }
-    return bsize;
-}
-
 static int get_service_status_check(dinitctl_t *ctl) {
     if (ctl->read_size < 1) {
         return 1;
     }
     if (ctl->read_buf[0] == DINIT_RP_SERVICESTATUS) {
-        return (ctl->read_size < service_status_buffer_size());
+        return (ctl->read_size < status_buffer_size());
     }
     return 0;
 }
@@ -693,10 +799,6 @@ DINITCTL_API int dinitctl_get_service_status_finish(
     int *exec_stage,
     int *exit_status
 ) {
-    char *buf;
-    int sreason, flgs;
-    uint16_t stage;
-
     switch (ctl->read_buf[0]) {
         case DINIT_RP_NAK:
             return consume_error(ctl, DINITCTL_ERROR);
@@ -710,47 +812,18 @@ DINITCTL_API int dinitctl_get_service_status_finish(
             return -1;
     }
 
-    /* now extract the status */
-    buf = ctl->read_buf + 2;
+    fill_status(
+        ctl->read_buf + 2,
+        state,
+        target_state,
+        pid,
+        flags,
+        stop_reason,
+        exec_stage,
+        exit_status
+    );
 
-    if (state) {
-        *state = *buf;
-    }
-    ++buf;
-    if (target_state) {
-        *target_state = *buf;
-    }
-    ++buf;
-
-    flgs = *buf++;
-    if (flags) {
-        *flags = flgs;
-    }
-    sreason = *buf++;
-    if (stop_reason) {
-        *stop_reason = sreason;
-    }
-
-    /* only under specific circumstances but we have to read it anyway */
-    memcpy(&stage, buf, sizeof(stage));
-    buf += sizeof(stage);
-
-    if (flgs & DINITCTL_SERVICE_FLAG_HAS_PID) {
-        if (pid) {
-            memcpy(pid, buf, sizeof(*pid));
-        }
-    } else {
-        if (sreason == DINITCTL_SERVICE_STOP_REASON_EXEC_FAILED) {
-            if (exec_stage) {
-                *exec_stage = stage;
-            }
-        }
-        if (exit_status) {
-            memcpy(exit_status, buf, sizeof(*exit_status));
-        }
-    }
-
-    consume_recvbuf(ctl, service_status_buffer_size());
+    consume_recvbuf(ctl, status_buffer_size());
     return DINITCTL_SUCCESS;
 }
 

@@ -104,6 +104,15 @@ enum dinitctl_service_exec_stage {
     DINITCTL_SERVICE_EXEC_STAGE_UID_GID, /**< Privileges setup. */
 };
 
+/** @brief Service event type. */
+enum dinitctl_service_event {
+    DINITCTL_SERVICE_EVENT_STARTED, /**< Service has started. */
+    DINITCTL_SERVICE_EVENT_STOPPED, /**< Service has stopped. */
+    DINITCTL_SERVICE_EVENT_START_FAILED, /**< Service startup has failed. */
+    DINITCTL_SERVICE_EVENT_START_CANCELED, /**< Service startup has been canceled. */
+    DINITCTL_SERVICE_EVENT_STOP_CANCELED, /**< Service stop has been canceled. */
+};
+
 /** @brief The async callback.
  *
  * Every async API consists of 3 calls. One is the primary invocation and
@@ -112,6 +121,28 @@ enum dinitctl_service_exec_stage {
  * the return value(s).
  */
 typedef void (*dinitctl_async_cb)(dinitctl_t *ctl, void *data);
+
+/** @brief Service event callback.
+ *
+ * The API makes it possible to subscribe to service events. Service
+ * events attach service status to the event, similarly to explicit
+ * event requests.
+ *
+ * One event callback is permitted per connection.
+ */
+typedef void (*dinitctl_service_event_cb)(
+    dinitctl_t *ctl,
+    dinitctl_service_handle_t handle,
+    int service_event,
+    int state,
+    int target_state,
+    pid_t pid,
+    int flags,
+    int stop_reason,
+    int exec_stage,
+    int exit_status,
+    void *data
+);
 
 /** @brief Open the dinitctl socket.
  *
@@ -192,6 +223,14 @@ DINITCTL_API int dinitctl_get_fd(dinitctl_t *ctl);
  * @return The number of events processed.
  */
 DINITCTL_API int dinitctl_dispatch(dinitctl_t *ctl, int timeout, bool *ops_left);
+
+/** @brief Set the service event callback.
+ *
+ * Sets the callback to be invoked upon reception of service events.
+ *
+ * This API cannot fail.
+ */
+DINITCTL_API void dinitctl_set_service_event_callback(dinitctl_t *ctl, dinitctl_service_event_cb cb, void *data);
 
 /** @brief Find or load a service by name.
  *

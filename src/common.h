@@ -15,6 +15,9 @@ struct dinitctl_op {
 };
 
 struct dinitctl_t {
+    /* service event callback */
+    dinitctl_service_event_cb sv_event_cb;
+    void *sv_event_data;
     /* linked list of queued operations */
     struct dinitctl_op *op_queue;
     struct dinitctl_op *op_last;
