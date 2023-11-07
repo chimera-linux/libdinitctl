@@ -9,6 +9,8 @@ project(
     ]
 )
 
+install_headers('include/libdinitctl.h')
+
 library(
     'dinitctl',
     ['src/libdinitctl.c'],
