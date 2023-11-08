@@ -47,46 +47,12 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 
+/** @brief The dinitctl handle.
+ *
+ * This opaque object represents a connection to a dinit socket
+ * along with event queues and other auxiliary data.
+ */
 typedef struct dinitctl dinitctl;
-
-/** @brief Service status.
- *
- * This structure contains all the known information about dinit
- * service status. It may be passed to event callbacks, it may
- * be returned by explicit status requests, or by listings.
- *
- * Not all fields may be filled in, as it is dependent on the current
- * service state and/or the flags. Fields that are not filled in are
- * still safe to read, but may contain unhelpful values (typically
- * zeroes).
- *
- * The state is always filled. The target_state applies to transitioning
- * services. The flags are bitwise-ORed. PID will be set for services
- * that have it (see flags), stop_reason will be set for stopped services
- * only, and exec_stage will be set for services whose execution failed.
- * For those, exit_status will be an errno value. For other stopped services,
- * exit_status will be the exit status code of the process.
- */
-typedef struct dinitctl_service_status {
-    pid_t pid; /**< The service PID. */
-    int state; /**< The current state. */
-    int target_state; /**< The target state. */
-    int flags; /**< Any dinitctl_service_flags. */
-    int stop_reason; /**< The dinitctl_service_stop_reason. */
-    int exec_stage; /**< The dinitctl_service_exec_stage. */
-    int exit_status; /**< Exit code or errno, depending on stop_reason. */
-} dinitctl_service_status;
-
-/** @brief Service list entry.
- *
- * This is used by dinitctl_list_services() APIs as the result. It
- * contains the service status and a name (of maximum of 256 characters,
- * plus a terminating zero).
- */
-typedef struct dinitctl_service_list_entry {
-    dinitctl_service_status status;
-    char name[257];
-} dinitctl_service_list_entry;
 
 /** @brief General return values.
  *
@@ -183,6 +149,45 @@ enum dinitctl_log_buffer_flag {
     DINITCTL_LOG_BUFFER_CLEAR = 1 << 0, /** Clear the log buffer. */
 };
 
+/** @brief Service status.
+ *
+ * This structure contains all the known information about dinit
+ * service status. It may be passed to event callbacks, it may
+ * be returned by explicit status requests, or by listings.
+ *
+ * Not all fields may be filled in, as it is dependent on the current
+ * service state and/or the flags. Fields that are not filled in are
+ * still safe to read, but may contain unhelpful values (typically
+ * zeroes).
+ *
+ * The state is always filled. The target_state applies to transitioning
+ * services. The flags are bitwise-ORed. PID will be set for services
+ * that have it (see flags), stop_reason will be set for stopped services
+ * only, and exec_stage will be set for services whose execution failed.
+ * For those, exit_status will be an errno value. For other stopped services,
+ * exit_status will be the exit status code of the process.
+ */
+typedef struct dinitctl_service_status {
+    pid_t pid; /**< The service PID. */
+    enum dinitctl_service_state state; /**< The current state. */
+    enum dinitctl_service_state target_state; /**< The target state. */
+    enum dinitctl_service_stop_reason stop_reason; /**< The dinitctl_service_stop_reason. */
+    enum dinitctl_service_exec_stage exec_stage; /**< The dinitctl_service_exec_stage. */
+    int flags; /**< Any dinitctl_service_flags. */
+    int exit_status; /**< Exit code or errno, depending on stop_reason. */
+} dinitctl_service_status;
+
+/** @brief Service list entry.
+ *
+ * This is used by dinitctl_list_services() APIs as the result. It
+ * contains the service status and a name (of maximum of 256 characters,
+ * plus a terminating zero).
+ */
+typedef struct dinitctl_service_list_entry {
+    dinitctl_service_status status;
+    char name[257];
+} dinitctl_service_list_entry;
+
 /** @brief The async callback.
  *
  * Every async API consists of 3 calls. One is the primary invocation and
@@ -203,7 +208,7 @@ typedef void (*dinitctl_async_cb)(dinitctl *ctl, void *data);
 typedef void (*dinitctl_service_event_cb)(
     dinitctl *ctl,
     uint32_t handle,
-    int service_event,
+    enum dinitctl_service_event service_event,
     dinitctl_service_status const *status,
     void *data
 );
@@ -343,7 +348,7 @@ DINITCTL_API void dinitctl_set_service_event_callback(dinitctl *ctl, dinitctl_se
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_load_service(dinitctl *ctl, char const *srv_name, bool find_only, uint32_t *handle, int *state, int *target_state);
+DINITCTL_API int dinitctl_load_service(dinitctl *ctl, char const *srv_name, bool find_only, uint32_t *handle, enum dinitctl_service_state *state, enum dinitctl_service_state *target_state);
 
 /** @brief Find or load a service by name.
  *
@@ -382,7 +387,7 @@ DINITCTL_API int dinitctl_load_service_async(dinitctl *ctl, char const *srv_name
  *
  * @return 0 on success or one of the error codes.
  */
-DINITCTL_API int dinitctl_load_service_finish(dinitctl *ctl, uint32_t *handle, int *state, int *target_state);
+DINITCTL_API int dinitctl_load_service_finish(dinitctl *ctl, uint32_t *handle, enum dinitctl_service_state *state, enum dinitctl_service_state *target_state);
 
 /** @brief Unload or reload a service.
  *
@@ -868,7 +873,7 @@ DINITCTL_API int dinitctl_get_service_status_finish(dinitctl *ctl, dinitctl_serv
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_add_remove_service_dependency(dinitctl *ctl, uint32_t from_handle, uint32_t to_handle, int type, bool remove, bool enable);
+DINITCTL_API int dinitctl_add_remove_service_dependency(dinitctl *ctl, uint32_t from_handle, uint32_t to_handle, enum dinitctl_dependency_type type, bool remove, bool enable);
 
 /** @brief Link two services together, or unlink them.
  *
@@ -892,7 +897,7 @@ DINITCTL_API int dinitctl_add_remove_service_dependency(dinitctl *ctl, uint32_t 
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_add_remove_service_dependency_async(dinitctl *ctl, uint32_t from_handle, uint32_t to_handle, int type, bool remove, bool enable, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_add_remove_service_dependency_async(dinitctl *ctl, uint32_t from_handle, uint32_t to_handle, enum dinitctl_dependency_type type, bool remove, bool enable, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the dependency setup.
  *
@@ -1097,7 +1102,7 @@ DINITCTL_API int dinitctl_setenv_finish(dinitctl *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_shutdown(dinitctl *ctl, int type);
+DINITCTL_API int dinitctl_shutdown(dinitctl *ctl, enum dinitctl_shutdown_type type);
 
 /** @brief Shut down dinit and maybe system.
  *
@@ -1114,7 +1119,7 @@ DINITCTL_API int dinitctl_shutdown(dinitctl *ctl, int type);
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_shutdown_async(dinitctl *ctl, int type, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_shutdown_async(dinitctl *ctl, enum dinitctl_shutdown_type type, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the shutdown command.
  *

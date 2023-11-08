@@ -557,8 +557,8 @@ DINITCTL_API void dinitctl_set_service_event_callback(
 
 struct load_service_ret {
     uint32_t *handle;
-    int *state;
-    int *target_state;
+    enum dinitctl_service_state *state;
+    enum dinitctl_service_state *target_state;
     int code;
 };
 
@@ -574,8 +574,8 @@ DINITCTL_API int dinitctl_load_service(
     char const *srv_name,
     bool find_only,
     uint32_t *handle,
-    int *state,
-    int *target_state
+    enum dinitctl_service_state *state,
+    enum dinitctl_service_state *target_state
 ) {
     struct load_service_ret ret;
     if (!bleed_queue(ctl)) {
@@ -666,8 +666,8 @@ DINITCTL_API int dinitctl_load_service_async(
 DINITCTL_API int dinitctl_load_service_finish(
     dinitctl *ctl,
     uint32_t *handle,
-    int *state,
-    int *target_state
+    enum dinitctl_service_state *state,
+    enum dinitctl_service_state *target_state
 ) {
     char *buf;
 
@@ -1541,7 +1541,7 @@ DINITCTL_API int dinitctl_add_remove_service_dependency(
     dinitctl *ctl,
     uint32_t from_handle,
     uint32_t to_handle,
-    int type,
+    enum dinitctl_dependency_type type,
     bool remove,
     bool enable
 ) {
@@ -1574,7 +1574,7 @@ DINITCTL_API int dinitctl_add_remove_service_dependency_async(
     dinitctl *ctl,
     uint32_t from_handle,
     uint32_t to_handle,
-    int type,
+    enum dinitctl_dependency_type type,
     bool remove,
     bool enable,
     dinitctl_async_cb cb,
@@ -2080,7 +2080,7 @@ static void shutdown_cb(dinitctl *ctl, void *data) {
     *((int *)data) = dinitctl_shutdown_finish(ctl);
 }
 
-DINITCTL_API int dinitctl_shutdown(dinitctl *ctl, int type) {
+DINITCTL_API int dinitctl_shutdown(dinitctl *ctl, enum dinitctl_shutdown_type type) {
     int ret;
     if (!bleed_queue(ctl)) {
         return -1;
@@ -2104,7 +2104,7 @@ static int shutdown_check(dinitctl *ctl) {
 }
 
 DINITCTL_API int dinitctl_shutdown_async(
-    dinitctl *ctl, int type, dinitctl_async_cb cb, void *data
+    dinitctl *ctl, enum dinitctl_shutdown_type type, dinitctl_async_cb cb, void *data
 ) {
     char *buf;
     struct dinitctl_op *qop;
