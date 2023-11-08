@@ -5,7 +5,8 @@ manager (https://github.com/davmac314/dinit). It's designed to map closely
 to the protocol, while offering a high-level API that can easily integrate
 into different event loops and is bindable.
 
-Currently it's incomplete.
+It implements the complete dinitctl protocol as in dinit 0.17+, however
+the API is not stable or well tested yet.
 
 ## Building
 

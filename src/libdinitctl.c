@@ -92,7 +92,7 @@ static void queue_op(dinitctl_t *ctl, struct dinitctl_op *op) {
 }
 
 static inline size_t status_buffer_size(void) {
-    size_t bsize = 8;
+    size_t bsize = 6;
     if (sizeof(pid_t) > sizeof(int)) {
         bsize += sizeof(pid_t);
     } else {
@@ -331,7 +331,7 @@ static bool bleed_queue(dinitctl_t *ctl) {
             if (errno == EINTR) {
                 continue;
             }
-            continue;
+            break;
         }
         if (!ops_left) {
             return true;
@@ -1132,7 +1132,7 @@ DINITCTL_API int dinitctl_unpin_service_finish(dinitctl_t *ctl) {
 
 struct get_service_name_ret {
     char **out;
-    size_t *outs;
+    ssize_t *outs;
     int code;
 };
 
@@ -1145,7 +1145,7 @@ DINITCTL_API int dinitctl_get_service_name(
     dinitctl_t *ctl,
     dinitctl_service_handle_t handle,
     char **name,
-    size_t *buf_len
+    ssize_t *buf_len
 ) {
     struct get_service_name_ret ret;
     if (!bleed_queue(ctl)) {
@@ -1219,7 +1219,7 @@ DINITCTL_API int dinitctl_get_service_name_async(
 }
 
 DINITCTL_API int dinitctl_get_service_name_finish(
-    dinitctl_t *ctl, char **name, size_t *buf_len
+    dinitctl_t *ctl, char **name, ssize_t *buf_len
 ) {
     uint16_t nlen;
     size_t alen, wlen;
@@ -1231,23 +1231,24 @@ DINITCTL_API int dinitctl_get_service_name_finish(
     memcpy(&nlen, &ctl->read_buf[2], sizeof(nlen));
     alen = nlen;
 
-    if (!buf_len) {
+    if (*buf_len < 0) {
         /* allocate the storage */
-        buf_len = &alen;
         *name = malloc(alen + 1);
         if (!*name) {
             return -1;
         }
+        wlen = alen;
     } else if (!*buf_len) {
         /* pure length query */
         *buf_len = alen;
         return DINITCTL_SUCCESS;
+    } else {
+        wlen = *buf_len - 1;
+        if (alen < wlen) {
+            wlen = alen;
+        }
     }
 
-    wlen = *buf_len - 1;
-    if (alen > wlen) {
-        wlen = alen;
-    }
     memcpy(*name, &ctl->read_buf[2 + sizeof(nlen)], wlen);
     /* terminate */
     *name[wlen] = '\0';
@@ -1259,7 +1260,7 @@ DINITCTL_API int dinitctl_get_service_name_finish(
 
 struct get_service_log_ret {
     char **out;
-    size_t *outs;
+    ssize_t *outs;
     int code;
 };
 
@@ -1273,7 +1274,7 @@ DINITCTL_API int dinitctl_get_service_log(
     dinitctl_service_handle_t handle,
     int flags,
     char **log,
-    size_t *buf_len
+    ssize_t *buf_len
 ) {
     struct get_service_log_ret ret;
     if (!bleed_queue(ctl)) {
@@ -1353,7 +1354,7 @@ DINITCTL_API int dinitctl_get_service_log_async(
 }
 
 DINITCTL_API int dinitctl_get_service_log_finish(
-    dinitctl_t *ctl, char **log, size_t *buf_len
+    dinitctl_t *ctl, char **log, ssize_t *buf_len
 ) {
     unsigned int nlen;
     size_t alen, wlen;
@@ -1365,23 +1366,24 @@ DINITCTL_API int dinitctl_get_service_log_finish(
     memcpy(&nlen, &ctl->read_buf[2], sizeof(nlen));
     alen = nlen;
 
-    if (!buf_len) {
+    if (*buf_len < 0) {
         /* allocate the storage */
-        buf_len = &alen;
         *log = malloc(alen + 1);
         if (!*log) {
             return -1;
         }
+        wlen = alen;
     } else if (!*buf_len) {
         /* pure length query */
         *buf_len = alen;
         return DINITCTL_SUCCESS;
+    } else {
+        wlen = *buf_len - 1;
+        if (alen < wlen) {
+            wlen = alen;
+        }
     }
 
-    wlen = *buf_len - 1;
-    if (alen > wlen) {
-        wlen = alen;
-    }
     memcpy(*log, &ctl->read_buf[2 + sizeof(nlen)], wlen);
     /* terminate */
     *log[wlen] = '\0';
@@ -1427,7 +1429,7 @@ static int get_service_status_check(dinitctl_t *ctl) {
         case DINIT_RP_NAK:
             return 0;
         case DINIT_RP_SERVICESTATUS: {
-            return (ctl->read_size < status_buffer_size());
+            return (ctl->read_size < (status_buffer_size() + 2));
         }
         default:
             break;
@@ -1475,7 +1477,7 @@ DINITCTL_API int dinitctl_get_service_status_finish(
         return consume_enum(ctl, DINITCTL_ERROR);
     }
     fill_status(ctl->read_buf + 2, status);
-    consume_recvbuf(ctl, status_buffer_size());
+    consume_recvbuf(ctl, status_buffer_size() + 2);
     return DINITCTL_SUCCESS;
 }
 
@@ -1734,6 +1736,199 @@ DINITCTL_API int dinitctl_signal_service_finish(dinitctl_t *ctl) {
             break;
     }
     return consume_enum(ctl, DINITCTL_SUCCESS);
+}
+
+struct list_services_ret {
+    dinitctl_service_list_entry **out;
+    ssize_t *outs;
+    int code;
+};
+
+static void list_services_cb(dinitctl_t *ctl, void *data) {
+    struct list_services_ret *ret = data;
+    ret->code = dinitctl_list_services_finish(ctl, ret->out, ret->outs);
+}
+
+DINITCTL_API int dinitctl_list_services(
+    dinitctl_t *ctl, dinitctl_service_list_entry **entries, ssize_t *len
+) {
+    struct list_services_ret ret;
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    ret.out = entries;
+    ret.outs = len;
+    if (dinitctl_list_services_async(ctl, &list_services_cb, &ret) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret.code;
+}
+
+static int list_services_check(dinitctl_t *ctl) {
+    size_t sbufs, rsize;
+    char *rbuf;
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_SVCINFO:
+            break;
+        case DINIT_RP_LISTDONE:
+            return 0;
+        default:
+            errno = EBADMSG;
+            return -1;
+    }
+    /* now count the entries */
+    sbufs = status_buffer_size();
+    rsize = ctl->read_size;
+    rbuf = ctl->read_buf;
+    for (;;) {
+        unsigned char rnlen;
+        size_t namlen;
+        if (rsize < 2) {
+            return 1;
+        }
+        memcpy(&rnlen, &rbuf[1], 1);
+        /* control protocol permits up to 256, but that overflows */
+        if (!rnlen) {
+            namlen = 256;
+        } else {
+            namlen = rnlen;
+        }
+        /* entry (svcinfo + namlen + sbuf) + listdone/svcinfo */
+        if (rsize < (3 + sbufs + namlen)) {
+            return 1;
+        }
+        /* final entry */
+        if (rbuf[sbufs + namlen + 2] == DINIT_RP_LISTDONE) {
+            return 0;
+        }
+        /* otherwise it must be next entry, or the message is bad */
+        if (rbuf[sbufs + namlen + 2] != DINIT_RP_SVCINFO) {
+            break;
+        }
+        /* move on to next */
+        rbuf += sbufs + namlen + 2;
+        rsize -= sbufs + namlen + 2;
+    }
+    errno = EBADMSG;
+    return -1;
+}
+
+DINITCTL_API int dinitctl_list_services_async(
+    dinitctl_t *ctl, dinitctl_async_cb cb, void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, 1, true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = DINIT_CP_LISTSERVICES;
+
+    qop->check_cb = &list_services_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_list_services_finish(
+    dinitctl_t *ctl, dinitctl_service_list_entry **entries, ssize_t *len
+) {
+    size_t sbufs, nentries, wentries, cons = 0;
+    char *buf = ctl->read_buf;
+    dinitctl_service_list_entry *curentry;
+
+    /* zero entries */
+    if (buf[0] == DINIT_RP_LISTDONE) {
+        *len = 0;
+        consume_recvbuf(ctl, 1);
+        return DINITCTL_SUCCESS;
+    }
+
+    /* otherwise count them for allocation purposes */
+    sbufs = status_buffer_size();
+    nentries = 0;
+    wentries = 0;
+
+    /* just write them in the first iteration if not allocating */
+    if (*len > 0) {
+        wentries = *len;
+        curentry = *entries;
+    }
+
+    for (;;) {
+        unsigned char rnlen;
+        size_t namlen;
+        memcpy(&rnlen, &buf[1], 1);
+        /* control protocol permits up to 256, but that overflows */
+        if (!rnlen) {
+            namlen = 256;
+        } else {
+            namlen = rnlen;
+        }
+        ++nentries;
+        /* if we're writing, write it */
+        if (wentries) {
+            fill_status(&buf[2], &curentry->status);
+            memcpy(curentry->name, &buf[2 + sbufs], namlen);
+            curentry->name[namlen] = '\0';
+            ++curentry;
+            --wentries;
+        }
+        cons += sbufs + namlen + 2;
+        /* final entry */
+        if (buf[sbufs + namlen + 2] == DINIT_RP_LISTDONE) {
+            ++cons;
+            break;
+        }
+        /* move on to next */
+        buf += sbufs + namlen + 2;
+    }
+
+    /* we already wrote them */
+    if (*len >= 0) {
+        *len = nentries;
+        consume_recvbuf(ctl, cons);
+        return DINITCTL_SUCCESS;
+    }
+
+    /* otherwise allocate and loop again */
+    *entries = malloc(sizeof(dinitctl_service_list_entry) * nentries);
+    *len = nentries;
+    curentry = *entries;
+
+    buf = ctl->read_buf;
+
+    for (size_t i = 0; i < nentries; ++i) {
+        unsigned char rnlen;
+        size_t namlen;
+        memcpy(&rnlen, &buf[1], 1);
+        if (!rnlen) {
+            namlen = 256;
+        } else {
+            namlen = rnlen;
+        }
+        fill_status(&buf[2], &curentry->status);
+        memcpy(curentry->name, &buf[2 + sbufs], namlen);
+        curentry->name[namlen] = '\0';
+        ++curentry;
+        buf += sbufs + namlen + 2;
+    }
+
+    consume_recvbuf(ctl, cons);
+    return DINITCTL_SUCCESS;
 }
 
 static void setenv_cb(dinitctl_t *ctl, void *data) {
@@ -2046,13 +2241,3 @@ DINITCTL_API int dinitctl_query_service_dirs_finish(
     consume_recvbuf(ctl, psize);
     return DINITCTL_SUCCESS;
 }
-
-#if 0
-
-TODO:
-
-/* List services */
-#define DINIT_CP_LISTSERVICES 8
-
-
-#endif

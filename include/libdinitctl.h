@@ -78,6 +78,17 @@ typedef struct dinitctl_service_status {
     int exit_status; /**< Exit code or errno, depending on stop_reason. */
 } dinitctl_service_status;
 
+/** @brief Service list entry.
+ *
+ * This is used by dinitctl_list_services() APIs as the result. It
+ * contains the service status and a name (of maximum of 256 characters,
+ * plus a terminating zero).
+ */
+typedef struct dinitctl_service_list_entry {
+    dinitctl_service_status status;
+    char name[257];
+} dinitctl_service_list_entry;
+
 /** @brief General return values.
  *
  * These positive values may be returned by int-returning APIs.
@@ -660,7 +671,7 @@ DINITCTL_API int dinitctl_unpin_service_finish(dinitctl_t *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_get_service_name(dinitctl_t *ctl, dinitctl_service_handle_t handle, char **name, size_t *buf_len);
+DINITCTL_API int dinitctl_get_service_name(dinitctl_t *ctl, dinitctl_service_handle_t handle, char **name, ssize_t *buf_len);
 
 /** @brief Get service name.
  *
@@ -682,19 +693,19 @@ DINITCTL_API int dinitctl_get_service_name_async(dinitctl_t *ctl, dinitctl_servi
  *
  * Invoked from the callback to dinitctl_get_service_name_async().
  *
- * If buf_len contains a pointer to a valid value, name must contain a
- * pointer to a valid buffer of that length, and the name will be written
- * in it and potentially truncated (terminating zero will be written as
- * well, unless the buffer is empty). The buf_len will then be updated to
- * the actual length of the name (i.e. the minimum buffer size to store
- * the whole name, minus terminating zero).
+ * The buf_len parameter is expected to always point to a valid value.
+ * If the value is negative, it means the storage for name should be
+ * allocated (and the user will be responsible for freeing it).
  *
- * One exception to that is if buf_len points to a value of zero, in which
- * case this call is a pure length query, name is not touched at all, and
- * length is written.
+ * Otherwise name is expected to point to a pre-allocated buffer of the
+ * given length, and the name will be written there and potentially
+ * truncated. The buf_len will be updated to the actual length of the
+ * name (without a terminating zero) regardless of if there is enough
+ * storage for it.
  *
- * Otherwise, a new value will be allocated with malloc() and the user is
- * responsible for freeing it.
+ * If the given buffer length is zero, name is not touched at all, and
+ * the name length will still be updated. This is essentially a pure length
+ * query.
  *
  * May fail with DINITCTL_ERROR (in case of rejection by remote side) or
  * with ENOMEM if the name needs allocation and it fails.
@@ -705,7 +716,7 @@ DINITCTL_API int dinitctl_get_service_name_async(dinitctl_t *ctl, dinitctl_servi
  *
  * @return Zero on success or a positive error code.
  */
-DINITCTL_API int dinitctl_get_service_name_finish(dinitctl_t *ctl, char **name, size_t *buf_len);
+DINITCTL_API int dinitctl_get_service_name_finish(dinitctl_t *ctl, char **name, ssize_t *buf_len);
 
 /** @brief Get service log buffer.
  *
@@ -719,7 +730,7 @@ DINITCTL_API int dinitctl_get_service_name_finish(dinitctl_t *ctl, char **name, 
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_get_service_log(dinitctl_t *ctl, dinitctl_service_handle_t handle, int flags, char **log, size_t *buf_len);
+DINITCTL_API int dinitctl_get_service_log(dinitctl_t *ctl, dinitctl_service_handle_t handle, int flags, char **log, ssize_t *buf_len);
 
 /** @brief Get service log buffer.
  *
@@ -747,19 +758,19 @@ DINITCTL_API int dinitctl_get_service_log_async(dinitctl_t *ctl, dinitctl_servic
  *
  * Invoked from the callback to dinitctl_get_service_log_async().
  *
- * If buf_len contains a pointer to a valid value, log must contain a
- * pointer to a valid buffer of that length, and the log will be written
- * in it and potentially truncated (terminating zero will be written as
- * well, unless the buffer is empty). The buf_len will then be updated to
- * the actual length of the log (i.e. the minimum buffer size to store
- * the whole log, minus terminating zero).
+ * The buf_len parameter is expected to always point to a valid value.
+ * If the value is negative, it means the storage for log should be
+ * allocated (and the user will be responsible for freeing it).
  *
- * One exception to that is if buf_len points to a value of zero, in which
- * case this call is a pure length query, log is not touched at all, and
- * length is written.
+ * Otherwise log is expected to point to a pre-allocated buffer of the
+ * given length, and the log will be written there and potentially
+ * truncated. The buf_len will be updated to the actual length of the
+ * log (without a terminating zero) regardless of if there is enough
+ * storage for it.
  *
- * Otherwise, a new value will be allocated with malloc() and the user is
- * responsible for freeing it.
+ * If the given buffer length is zero, log is not touched at all, and
+ * the log length will still be updated. This is essentially a pure length
+ * query.
  *
  * May fail with DINITCTL_ERROR (in case of rejection by remote side) or
  * with ENOMEM if the log needs allocation and it fails.
@@ -770,7 +781,7 @@ DINITCTL_API int dinitctl_get_service_log_async(dinitctl_t *ctl, dinitctl_servic
  *
  * @return Zero on success or a positive error code.
  */
-DINITCTL_API int dinitctl_get_service_log_finish(dinitctl_t *ctl, char **log, size_t *buf_len);
+DINITCTL_API int dinitctl_get_service_log_finish(dinitctl_t *ctl, char **log, ssize_t *buf_len);
 
 /** @brief Get service status.
  *
@@ -954,6 +965,58 @@ DINITCTL_API int dinitctl_signal_service_async(dinitctl_t *ctl, dinitctl_service
  * @return Zero on success or a positive error code.
  */
 DINITCTL_API int dinitctl_signal_service_finish(dinitctl_t *ctl);
+
+/** @brief List services.
+ *
+ * Synchronous variant of dinitctl_list_services_async().
+ *
+ * @param ctl The dinitctl.
+ * @param[out] entries The list entries.
+ * @param[inout] len Optional number of entries.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_list_services(dinitctl_t *ctl, dinitctl_service_list_entry **entries, ssize_t *len);
+
+/** @brief List services.
+ *
+ * This will fetch all loaded services' statuses.
+ *
+ * May only fail with ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param cb The callback.
+ * @param data The data to pass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_list_services_async(dinitctl_t *ctl, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish listing the services.
+ *
+ * Invoked from the callback to dinitctl_list_services_async().
+ *
+ * The llen parameter is expected to always point to a valid value.
+ * If the value is negative, it means the storage for entries should be
+ * allocated (and the user will be responsible for freeing it).
+ *
+ * Otherwise entries is expected to point to a pre-allocated buffer of
+ * len entries, and the entries will be written there up to len. The len
+ * will be updated to the actual number of entries egardless of if there
+ * is enough storage for it.
+ *
+ * If len is zero, entries is not touched at all, and the number will still
+ * be updated. This is essentially a pure count query.
+ *
+ * May fail only with ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param[out] entries The list entries.
+ * @param[inout] len Optional number of entries.
+ *
+ * @return Zero on success or a negative error code.
+ */
+DINITCTL_API int dinitctl_list_services_finish(dinitctl_t *ctl, dinitctl_service_list_entry **entries, ssize_t *len);
 
 /** @brief Set an environment variable in the dinit environment.
  *
