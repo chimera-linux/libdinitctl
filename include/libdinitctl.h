@@ -50,6 +50,34 @@ extern "C" {
 typedef struct dinitctl_t dinitctl_t;
 typedef uint32_t dinitctl_service_handle_t;
 
+/** @brief Service status.
+ *
+ * This structure contains all the known information about dinit
+ * service status. It may be passed to event callbacks, it may
+ * be returned by explicit status requests, or by listings.
+ *
+ * Not all fields may be filled in, as it is dependent on the current
+ * service state and/or the flags. Fields that are not filled in are
+ * still safe to read, but may contain unhelpful values (typically
+ * zeroes).
+ *
+ * The state is always filled. The target_state applies to transitioning
+ * services. The flags are bitwise-ORed. PID will be set for services
+ * that have it (see flags), stop_reason will be set for stopped services
+ * only, and exec_stage will be set for services whose execution failed.
+ * For those, exit_status will be an errno value. For other stopped services,
+ * exit_status will be the exit status code of the process.
+ */
+typedef struct dinitctl_service_status {
+    pid_t pid; /**< The service PID. */
+    int state; /**< The current state. */
+    int target_state; /**< The target state. */
+    int flags; /**< Any dinitctl_service_flags. */
+    int stop_reason; /**< The dinitctl_service_stop_reason. */
+    int exec_stage; /**< The dinitctl_service_exec_stage. */
+    int exit_status; /**< Exit code or errno, depending on stop_reason. */
+} dinitctl_service_status;
+
 /** @brief General return values.
  *
  * These positive values may be returned by int-returning APIs.
@@ -166,13 +194,7 @@ typedef void (*dinitctl_service_event_cb)(
     dinitctl_t *ctl,
     dinitctl_service_handle_t handle,
     int service_event,
-    int state,
-    int target_state,
-    pid_t pid,
-    int flags,
-    int stop_reason,
-    int exec_stage,
-    int exit_status,
+    dinitctl_service_status const *status,
     void *data
 );
 
@@ -756,17 +778,11 @@ DINITCTL_API int dinitctl_get_service_log_finish(dinitctl_t *ctl, char **log, si
  *
  * @param ctl The dinitctl.
  * @param handle The service handle.
- * @param[out] state The service state.
- * @param[out] target_state The service target state.
- * @param[out] pid The service PID.
- * @param[out] flags The service flags.
- * @param[out] stop_reason The service stop reason.
- * @param[out] exec_stage The service exec stage.
- * @param[out] exit_status The service exit status or errno.
+ * @param[out] status The status.
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_get_service_status(dinitctl_t *ctl, dinitctl_service_handle_t handle, int *state, int *target_state, pid_t *pid, int *flags, int *stop_reason, int *exec_stage, int *exit_status);
+DINITCTL_API int dinitctl_get_service_status(dinitctl_t *ctl, dinitctl_service_handle_t handle, dinitctl_service_status *status);
 
 /** @brief Get service status.
  *
@@ -788,32 +804,17 @@ DINITCTL_API int dinitctl_get_service_status_async(dinitctl_t *ctl, dinitctl_ser
  *
  * Invoked from the callback to dinitctl_get_service_status_async().
  *
- * All output params are optional.
- *
- * Stores the service state (always, one of dinitctl_service_state),
- * target state (ditto, if applicable, for transitioning services),
- * flags (dinitctl_service_flag, bitwise ORed). The others are set
- * depending on the status; pid will be set for services that have
- * it (see the flags), stop_reason will be set for stopped services,
- * exec_stage will be set for services whose execution failed, in
- * which case exit_status will be an errno, otherwise it will be
- * the exit status code for stopped services whose process failed.
+ * Stores the service status in the output parameter.
  *
  * May fail with DINITCTL_ERROR (in case of rejection by remote side).
  * No unrecoverable errors are possible.
  *
  * @param ctl The dinitctl.
- * @param[out] state The service state.
- * @param[out] target_state The service target state.
- * @param[out] pid The service PID.
- * @param[out] flags The service flags.
- * @param[out] stop_reason The service stop reason.
- * @param[out] exec_stage The service exec stage.
- * @param[out] exit_status The service exit status or errno.
+ * @param[out] status The status.
  *
  * @return Zero on success or a positive error code.
  */
-DINITCTL_API int dinitctl_get_service_status_finish(dinitctl_t *ctl, int *state, int *target_state, pid_t *pid, int *flags, int *stop_reason, int *exec_stage, int *exit_status);
+DINITCTL_API int dinitctl_get_service_status_finish(dinitctl_t *ctl, dinitctl_service_status *status);
 
 /** @brief Link two services together, or unlink them.
  *
