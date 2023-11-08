@@ -1,6 +1,6 @@
 /* libdinitctl: high level API to dinitctl socket interface
-*
-* Copyright 2023 q66 <q66@chimera-linux.org>
+ *
+ * Copyright 2023 q66 <q66@chimera-linux.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
 */
@@ -20,6 +20,9 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <assert.h>
+#include <pwd.h>
+
+#include "config.h"
 
 #include "common.h"
 #include "messages.h"
@@ -340,12 +343,18 @@ static bool bleed_queue(dinitctl *ctl) {
     return false;
 }
 
-DINITCTL_API dinitctl *dinitctl_open(char const *socket_path) {
+static dinitctl *open_sock(char const *base, char const *sock) {
     struct sockaddr_un saddr;
-    size_t slen = strlen(socket_path);
+    size_t slen = strlen(base), tlen = slen;
     int fd;
 
-    if (slen >= sizeof(saddr.sun_path)) {
+    if (sock) {
+        if (base[tlen - 1] != '/') {
+            tlen += 1;
+        }
+        tlen += strlen(sock);
+    }
+    if (tlen >= sizeof(saddr.sun_path)) {
         errno = EINVAL;
         return NULL;
     }
@@ -358,13 +367,56 @@ DINITCTL_API dinitctl *dinitctl_open(char const *socket_path) {
     memset(&saddr, 0, sizeof(saddr));
 
     saddr.sun_family = AF_UNIX;
-    memcpy(saddr.sun_path, socket_path, slen);
+    memcpy(saddr.sun_path, base, slen);
+    if (tlen > slen) {
+        if (saddr.sun_path[slen - 1] != '/') {
+            saddr.sun_path[slen] = '/';
+            memcpy(&saddr.sun_path[slen + 1], sock, tlen - slen - 1);
+        } else {
+            memcpy(&saddr.sun_path[slen], sock, tlen - slen);
+        }
+    }
 
     if (connect(fd, (struct sockaddr const *)&saddr, sizeof(saddr)) < 0) {
         return NULL;
     }
 
     return dinitctl_open_fd(fd);
+}
+
+DINITCTL_API dinitctl *dinitctl_open(char const *socket_path) {
+    return open_sock(socket_path, NULL);
+}
+
+DINITCTL_API dinitctl *dinitctl_open_system(void) {
+    return dinitctl_open(DINIT_CONTROL_SOCKET);
+}
+
+DINITCTL_API dinitctl *dinitctl_open_user(void) {
+    char const *rdir = getenv("XDG_RUNTIME_DIR");
+    char const *sock = "dinitctl";
+    if (!rdir) {
+        rdir = getenv("HOME");
+        sock = ".dinitctl";
+    }
+    if (!rdir) {
+        struct passwd *pw = getpwuid(getuid());
+        if (pw) {
+            rdir = pw->pw_dir;
+        }
+    }
+    if (!rdir) {
+        errno = ENOENT;
+        return NULL;
+    }
+    return open_sock(rdir, sock);
+}
+
+DINITCTL_API dinitctl *dinitctl_open_default(void) {
+    if (geteuid() == 0) {
+        return dinitctl_open_system();
+    }
+    return dinitctl_open_user();
 }
 
 static int version_check(dinitctl *ctl) {

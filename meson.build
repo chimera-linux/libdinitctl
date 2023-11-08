@@ -11,6 +11,11 @@ project(
 
 install_headers('include/libdinitctl.h')
 
+cdata = configuration_data()
+cdata.set_quoted('DINIT_CONTROL_SOCKET', get_option('system-control-socket'))
+
+configure_file(output: 'config.h', configuration: cdata)
+
 library(
     'dinitctl',
     ['src/libdinitctl.c'],

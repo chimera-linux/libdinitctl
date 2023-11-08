@@ -220,6 +220,35 @@ typedef void (*dinitctl_service_event_cb)(
  */
 DINITCTL_API dinitctl *dinitctl_open(char const *socket_path);
 
+/** @brief Open the system dinitctl socket.
+ *
+ * Like dinitctl_open(), but using the system socket path the library
+ * was built with (which should match what dinit was built with). A
+ * default system dinit must be running for this to succeed.
+ *
+ * @return A dinitctl handle.
+ */
+DINITCTL_API dinitctl *dinitctl_open_system(void);
+
+/** @brief Open the user dinitctl socket.
+ *
+ * Like dinitctl_open(), but using the default user socket path. The
+ * logic to determine the user socket path is the same as in the dinit
+ * codebase. A default user dinit must be running for this to succeed.
+ *
+ * @return A dinitctl handle.
+ */
+DINITCTL_API dinitctl *dinitctl_open_user(void);
+
+/** @brief Open the default dinitctl socket.
+ *
+ * For root user, this is dinitctl_open_system(). For any other user,
+ * this is dinitctl_open_user().
+ *
+* @return A dinitctl handle.
+ */
+DINITCTL_API dinitctl *dinitctl_open_default(void);
+
 /** @brief Open a dinitctl handle via preopened file descriptor.
  *
  * Given a file descriptor (which must be an open connection to the
