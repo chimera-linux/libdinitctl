@@ -24,7 +24,7 @@
 #include "common.h"
 #include "messages.h"
 
-static char *reserve_sendbuf(dinitctl_t *ctl, size_t len, bool inc_size) {
+static char *reserve_sendbuf(dinitctl *ctl, size_t len, bool inc_size) {
     char *ret;
     if (ctl->write_cap < len) {
         size_t tlen = (ctl->write_size + ctl->write_cap);
@@ -46,7 +46,7 @@ static char *reserve_sendbuf(dinitctl_t *ctl, size_t len, bool inc_size) {
     return ret;
 }
 
-static void consume_recvbuf(dinitctl_t *ctl, size_t len) {
+static void consume_recvbuf(dinitctl *ctl, size_t len) {
     if (!len) {
         return;
     }
@@ -59,16 +59,16 @@ static void consume_recvbuf(dinitctl_t *ctl, size_t len) {
     );
 }
 
-static void update_recvbuf(dinitctl_t *ctl, char *nbuf) {
+static void update_recvbuf(dinitctl *ctl, char *nbuf) {
     consume_recvbuf(ctl, (nbuf - ctl->read_buf));
 }
 
-static int consume_enum(dinitctl_t *ctl, int val) {
+static int consume_enum(dinitctl *ctl, int val) {
     consume_recvbuf(ctl, 1);
     return val;
 }
 
-static struct dinitctl_op *new_op(dinitctl_t *ctl) {
+static struct dinitctl_op *new_op(dinitctl *ctl) {
     struct dinitctl_op *ret;
     if (ctl->op_avail) {
         ret = ctl->op_avail;
@@ -80,7 +80,7 @@ static struct dinitctl_op *new_op(dinitctl_t *ctl) {
     return ret;
 }
 
-static void queue_op(dinitctl_t *ctl, struct dinitctl_op *op) {
+static void queue_op(dinitctl *ctl, struct dinitctl_op *op) {
     if (!ctl->op_last) {
         /* first to queue */
         assert(!ctl->op_queue);
@@ -130,7 +130,7 @@ static void fill_status(
     }
 }
 
-static int event_check(dinitctl_t *ctl) {
+static int event_check(dinitctl *ctl) {
     if (ctl->read_buf[0] == DINIT_IP_SERVICEEVENT) {
         char psz = ctl->read_buf[1];
         if (ctl->read_size < (size_t)psz) {
@@ -143,7 +143,7 @@ static int event_check(dinitctl_t *ctl) {
     return 0;
 }
 
-static void event_cb(dinitctl_t *ctl, void *data) {
+static void event_cb(dinitctl *ctl, void *data) {
     (void)data;
     if (ctl->sv_event_cb) {
         char *buf = &ctl->read_buf[2];
@@ -161,7 +161,7 @@ static void event_cb(dinitctl_t *ctl, void *data) {
     consume_recvbuf(ctl, ctl->read_buf[1]);
 }
 
-DINITCTL_API int dinitctl_dispatch(dinitctl_t *ctl, int timeout, bool *ops_left) {
+DINITCTL_API int dinitctl_dispatch(dinitctl *ctl, int timeout, bool *ops_left) {
     struct pollfd pfd;
     ssize_t ss;
     size_t uss, read;
@@ -323,7 +323,7 @@ DINITCTL_API int dinitctl_dispatch(dinitctl_t *ctl, int timeout, bool *ops_left)
     return ops;
 }
 
-static bool bleed_queue(dinitctl_t *ctl) {
+static bool bleed_queue(dinitctl *ctl) {
     bool ops_left;
     for (;;) {
         int d = dinitctl_dispatch(ctl, -1, &ops_left);
@@ -340,7 +340,7 @@ static bool bleed_queue(dinitctl_t *ctl) {
     return false;
 }
 
-DINITCTL_API dinitctl_t *dinitctl_open(char const *socket_path) {
+DINITCTL_API dinitctl *dinitctl_open(char const *socket_path) {
     struct sockaddr_un saddr;
     size_t slen = strlen(socket_path);
     int fd;
@@ -367,7 +367,7 @@ DINITCTL_API dinitctl_t *dinitctl_open(char const *socket_path) {
     return dinitctl_open_fd(fd);
 }
 
-static int version_check(dinitctl_t *ctl) {
+static int version_check(dinitctl *ctl) {
     uint16_t min_compat;
     uint16_t cp_ver;
 
@@ -392,7 +392,7 @@ static int version_check(dinitctl_t *ctl) {
     return 0;
 }
 
-static void version_cb(dinitctl_t *ctl, void *data) {
+static void version_cb(dinitctl *ctl, void *data) {
     int *ret = data;
 
     consume_recvbuf(ctl, 2 * sizeof(uint16_t) + 1);
@@ -400,8 +400,8 @@ static void version_cb(dinitctl_t *ctl, void *data) {
     *ret = 0;
 }
 
-DINITCTL_API dinitctl_t *dinitctl_open_fd(int fd) {
-    dinitctl_t *ctl;
+DINITCTL_API dinitctl *dinitctl_open_fd(int fd) {
+    dinitctl *ctl;
     struct dinitctl_op *qop;
     int cvret, flags;
 
@@ -421,7 +421,7 @@ DINITCTL_API dinitctl_t *dinitctl_open_fd(int fd) {
             return NULL;
         }
     }
-    ctl = malloc(sizeof(dinitctl_t));
+    ctl = malloc(sizeof(dinitctl));
     if (!ctl) {
         return NULL;
     }
@@ -471,7 +471,7 @@ DINITCTL_API dinitctl_t *dinitctl_open_fd(int fd) {
     return ctl;
 }
 
-DINITCTL_API void dinitctl_close(dinitctl_t *ctl) {
+DINITCTL_API void dinitctl_close(dinitctl *ctl) {
     /* finish processing what we can */
     bleed_queue(ctl);
     /* then close the associated stuff */
@@ -492,12 +492,12 @@ DINITCTL_API void dinitctl_close(dinitctl_t *ctl) {
     free(ctl);
 }
 
-DINITCTL_API int dinitctl_get_fd(dinitctl_t *ctl) {
+DINITCTL_API int dinitctl_get_fd(dinitctl *ctl) {
     return ctl->fd;
 }
 
 DINITCTL_API void dinitctl_set_service_event_callback(
-    dinitctl_t *ctl, dinitctl_service_event_cb cb, void *data
+    dinitctl *ctl, dinitctl_service_event_cb cb, void *data
 ) {
     ctl->sv_event_cb = cb;
     ctl->sv_event_data = data;
@@ -510,7 +510,7 @@ struct load_service_ret {
     int code;
 };
 
-static void load_service_cb(dinitctl_t *ctl, void *data) {
+static void load_service_cb(dinitctl *ctl, void *data) {
     struct load_service_ret *ret = data;
     ret->code = dinitctl_load_service_finish(
         ctl, ret->handle, ret->state, ret->target_state
@@ -518,7 +518,7 @@ static void load_service_cb(dinitctl_t *ctl, void *data) {
 }
 
 DINITCTL_API int dinitctl_load_service(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     char const *srv_name,
     bool find_only,
     dinitctl_service_handle_t *handle,
@@ -543,7 +543,7 @@ DINITCTL_API int dinitctl_load_service(
     return ret.code;
 }
 
-static int load_service_check(dinitctl_t *ctl) {
+static int load_service_check(dinitctl *ctl) {
     struct dinitctl_op *op = ctl->op_queue;
     char msg = (char)(uintptr_t)op->finish_data;
 
@@ -570,7 +570,7 @@ static int load_service_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_load_service_async(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     char const *srv_name,
     bool find_only,
     dinitctl_async_cb cb,
@@ -612,7 +612,7 @@ DINITCTL_API int dinitctl_load_service_async(
 }
 
 DINITCTL_API int dinitctl_load_service_finish(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t *handle,
     int *state,
     int *target_state
@@ -651,12 +651,12 @@ DINITCTL_API int dinitctl_load_service_finish(
     return DINITCTL_SUCCESS;
 }
 
-static void unload_cb(dinitctl_t *ctl, void *data) {
+static void unload_cb(dinitctl *ctl, void *data) {
     *((int *)data) = dinitctl_unload_service_finish(ctl);
 }
 
 DINITCTL_API int dinitctl_unload_service(
-    dinitctl_t *ctl, dinitctl_service_handle_t handle, bool reload
+    dinitctl *ctl, dinitctl_service_handle_t handle, bool reload
 ) {
     int ret;
     if (!bleed_queue(ctl)) {
@@ -673,7 +673,7 @@ DINITCTL_API int dinitctl_unload_service(
     return ret;
 }
 
-static int unload_check(dinitctl_t *ctl) {
+static int unload_check(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_ACK:
         case DINIT_RP_NAK:
@@ -684,7 +684,7 @@ static int unload_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_unload_service_async(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t handle,
     bool reload,
     dinitctl_async_cb cb,
@@ -715,19 +715,19 @@ DINITCTL_API int dinitctl_unload_service_async(
     return 0;
 }
 
-DINITCTL_API int dinitctl_unload_service_finish(dinitctl_t *ctl) {
+DINITCTL_API int dinitctl_unload_service_finish(dinitctl *ctl) {
     if (ctl->read_buf[0] == DINIT_RP_NAK) {
         return consume_enum(ctl, DINITCTL_ERROR);
     }
     return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
-static void start_cb(dinitctl_t *ctl, void *data) {
+static void start_cb(dinitctl *ctl, void *data) {
     *((int *)data) = dinitctl_start_service_finish(ctl);
 }
 
 DINITCTL_API int dinitctl_start_service(
-    dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin
+    dinitctl *ctl, dinitctl_service_handle_t handle, bool pin
 ) {
     int ret;
     if (!bleed_queue(ctl)) {
@@ -744,7 +744,7 @@ DINITCTL_API int dinitctl_start_service(
     return ret;
 }
 
-static int start_check(dinitctl_t *ctl) {
+static int start_check(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_ACK:
         case DINIT_RP_SHUTTINGDOWN:
@@ -757,7 +757,7 @@ static int start_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_start_service_async(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t handle,
     bool pin,
     dinitctl_async_cb cb,
@@ -789,7 +789,7 @@ DINITCTL_API int dinitctl_start_service_async(
     return 0;
 }
 
-DINITCTL_API int dinitctl_start_service_finish(dinitctl_t *ctl) {
+DINITCTL_API int dinitctl_start_service_finish(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_SHUTTINGDOWN:
             return consume_enum(ctl, DINITCTL_ERROR_SHUTTING_DOWN);
@@ -803,12 +803,12 @@ DINITCTL_API int dinitctl_start_service_finish(dinitctl_t *ctl) {
     return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
-static void stop_cb(dinitctl_t *ctl, void *data) {
+static void stop_cb(dinitctl *ctl, void *data) {
     *((int *)data) = dinitctl_stop_service_finish(ctl);
 }
 
 DINITCTL_API int dinitctl_stop_service(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t handle,
     bool pin,
     bool restart,
@@ -829,7 +829,7 @@ DINITCTL_API int dinitctl_stop_service(
     return ret;
 }
 
-static int stop_check(dinitctl_t *ctl) {
+static int stop_check(dinitctl *ctl) {
     struct dinitctl_op *op = ctl->op_queue;
     bool gentle = (bool)(uintptr_t)op->finish_data;
 
@@ -851,7 +851,7 @@ static int stop_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_stop_service_async(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t handle,
     bool pin,
     bool restart,
@@ -892,7 +892,7 @@ DINITCTL_API int dinitctl_stop_service_async(
     return 0;
 }
 
-DINITCTL_API int dinitctl_stop_service_finish(dinitctl_t *ctl) {
+DINITCTL_API int dinitctl_stop_service_finish(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_SHUTTINGDOWN:
             return consume_enum(ctl, DINITCTL_ERROR_SHUTTING_DOWN);
@@ -910,12 +910,12 @@ DINITCTL_API int dinitctl_stop_service_finish(dinitctl_t *ctl) {
     return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
-static void wake_cb(dinitctl_t *ctl, void *data) {
+static void wake_cb(dinitctl *ctl, void *data) {
     *((int *)data) = dinitctl_wake_service_finish(ctl);
 }
 
 DINITCTL_API int dinitctl_wake_service(
-    dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin
+    dinitctl *ctl, dinitctl_service_handle_t handle, bool pin
 ) {
     int ret;
     if (!bleed_queue(ctl)) {
@@ -932,7 +932,7 @@ DINITCTL_API int dinitctl_wake_service(
     return ret;
 }
 
-static int wake_check(dinitctl_t *ctl) {
+static int wake_check(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_ACK:
         case DINIT_RP_SHUTTINGDOWN:
@@ -946,7 +946,7 @@ static int wake_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_wake_service_async(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t handle,
     bool pin,
     dinitctl_async_cb cb,
@@ -978,7 +978,7 @@ DINITCTL_API int dinitctl_wake_service_async(
     return 0;
 }
 
-DINITCTL_API int dinitctl_wake_service_finish(dinitctl_t *ctl) {
+DINITCTL_API int dinitctl_wake_service_finish(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_SHUTTINGDOWN:
             return consume_enum(ctl, DINITCTL_ERROR_SHUTTING_DOWN);
@@ -994,12 +994,12 @@ DINITCTL_API int dinitctl_wake_service_finish(dinitctl_t *ctl) {
     return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
-static void release_cb(dinitctl_t *ctl, void *data) {
+static void release_cb(dinitctl *ctl, void *data) {
     *((int *)data) = dinitctl_release_service_finish(ctl);
 }
 
 DINITCTL_API int dinitctl_release_service(
-    dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin
+    dinitctl *ctl, dinitctl_service_handle_t handle, bool pin
 ) {
     int ret;
     if (!bleed_queue(ctl)) {
@@ -1016,7 +1016,7 @@ DINITCTL_API int dinitctl_release_service(
     return ret;
 }
 
-static int release_check(dinitctl_t *ctl) {
+static int release_check(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_ACK:
         case DINIT_RP_ALREADYSS:
@@ -1027,7 +1027,7 @@ static int release_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_release_service_async(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t handle,
     bool pin,
     dinitctl_async_cb cb,
@@ -1059,19 +1059,19 @@ DINITCTL_API int dinitctl_release_service_async(
     return 0;
 }
 
-DINITCTL_API int dinitctl_release_service_finish(dinitctl_t *ctl) {
+DINITCTL_API int dinitctl_release_service_finish(dinitctl *ctl) {
     if (ctl->read_buf[0] == DINIT_RP_ALREADYSS) {
         return consume_enum(ctl, DINITCTL_ERROR_SERVICE_ALREADY);
     }
     return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
-static void unpin_cb(dinitctl_t *ctl, void *data) {
+static void unpin_cb(dinitctl *ctl, void *data) {
     *((int *)data) = dinitctl_unpin_service_finish(ctl);
 }
 
 DINITCTL_API int dinitctl_unpin_service(
-    dinitctl_t *ctl, dinitctl_service_handle_t handle
+    dinitctl *ctl, dinitctl_service_handle_t handle
 ) {
     int ret;
     if (!bleed_queue(ctl)) {
@@ -1086,7 +1086,7 @@ DINITCTL_API int dinitctl_unpin_service(
     return ret;
 }
 
-static int unpin_check(dinitctl_t *ctl) {
+static int unpin_check(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_ACK:
             return 0;
@@ -1096,7 +1096,7 @@ static int unpin_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_unpin_service_async(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t handle,
     dinitctl_async_cb cb,
     void *data
@@ -1126,7 +1126,7 @@ DINITCTL_API int dinitctl_unpin_service_async(
     return 0;
 }
 
-DINITCTL_API int dinitctl_unpin_service_finish(dinitctl_t *ctl) {
+DINITCTL_API int dinitctl_unpin_service_finish(dinitctl *ctl) {
     return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
@@ -1136,13 +1136,13 @@ struct get_service_name_ret {
     int code;
 };
 
-static void get_service_name_cb(dinitctl_t *ctl, void *data) {
+static void get_service_name_cb(dinitctl *ctl, void *data) {
     struct get_service_name_ret *ret = data;
     ret->code = dinitctl_get_service_name_finish(ctl, ret->out, ret->outs);
 }
 
 DINITCTL_API int dinitctl_get_service_name(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t handle,
     char **name,
     ssize_t *buf_len
@@ -1164,7 +1164,7 @@ DINITCTL_API int dinitctl_get_service_name(
     return ret.code;
 }
 
-static int get_service_name_check(dinitctl_t *ctl) {
+static int get_service_name_check(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_NAK:
             return 0;
@@ -1187,7 +1187,7 @@ static int get_service_name_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_get_service_name_async(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t handle,
     dinitctl_async_cb cb,
     void *data
@@ -1219,7 +1219,7 @@ DINITCTL_API int dinitctl_get_service_name_async(
 }
 
 DINITCTL_API int dinitctl_get_service_name_finish(
-    dinitctl_t *ctl, char **name, ssize_t *buf_len
+    dinitctl *ctl, char **name, ssize_t *buf_len
 ) {
     uint16_t nlen;
     size_t alen, wlen;
@@ -1264,13 +1264,13 @@ struct get_service_log_ret {
     int code;
 };
 
-static void get_service_log_cb(dinitctl_t *ctl, void *data) {
+static void get_service_log_cb(dinitctl *ctl, void *data) {
     struct get_service_log_ret *ret = data;
     ret->code = dinitctl_get_service_log_finish(ctl, ret->out, ret->outs);
 }
 
 DINITCTL_API int dinitctl_get_service_log(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t handle,
     int flags,
     char **log,
@@ -1293,7 +1293,7 @@ DINITCTL_API int dinitctl_get_service_log(
     return ret.code;
 }
 
-static int get_service_log_check(dinitctl_t *ctl) {
+static int get_service_log_check(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_NAK:
             return 0;
@@ -1316,7 +1316,7 @@ static int get_service_log_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_get_service_log_async(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t handle,
     int flags,
     dinitctl_async_cb cb,
@@ -1354,7 +1354,7 @@ DINITCTL_API int dinitctl_get_service_log_async(
 }
 
 DINITCTL_API int dinitctl_get_service_log_finish(
-    dinitctl_t *ctl, char **log, ssize_t *buf_len
+    dinitctl *ctl, char **log, ssize_t *buf_len
 ) {
     unsigned int nlen;
     size_t alen, wlen;
@@ -1398,13 +1398,13 @@ struct get_service_status_ret {
     int code;
 };
 
-static void get_service_status_cb(dinitctl_t *ctl, void *data) {
+static void get_service_status_cb(dinitctl *ctl, void *data) {
     struct get_service_status_ret *ret = data;
     ret->code = dinitctl_get_service_status_finish(ctl, ret->status);
 }
 
 DINITCTL_API int dinitctl_get_service_status(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t handle,
     dinitctl_service_status *status
 ) {
@@ -1424,7 +1424,7 @@ DINITCTL_API int dinitctl_get_service_status(
     return ret.code;
 }
 
-static int get_service_status_check(dinitctl_t *ctl) {
+static int get_service_status_check(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_NAK:
             return 0;
@@ -1439,7 +1439,7 @@ static int get_service_status_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_get_service_status_async(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t handle,
     dinitctl_async_cb cb,
     void *data
@@ -1470,7 +1470,7 @@ DINITCTL_API int dinitctl_get_service_status_async(
 }
 
 DINITCTL_API int dinitctl_get_service_status_finish(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_status *status
 ) {
     if (ctl->read_buf[0] == DINIT_RP_NAK) {
@@ -1481,12 +1481,12 @@ DINITCTL_API int dinitctl_get_service_status_finish(
     return DINITCTL_SUCCESS;
 }
 
-static void add_rm_dep_cb(dinitctl_t *ctl, void *data) {
+static void add_rm_dep_cb(dinitctl *ctl, void *data) {
     *((int *)data) = dinitctl_add_remove_service_dependency_finish(ctl);
 }
 
 DINITCTL_API int dinitctl_add_remove_service_dependency(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t from_handle,
     dinitctl_service_handle_t to_handle,
     int type,
@@ -1508,7 +1508,7 @@ DINITCTL_API int dinitctl_add_remove_service_dependency(
     return ret;
 }
 
-static int add_rm_dep_check(dinitctl_t *ctl) {
+static int add_rm_dep_check(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_ACK:
         case DINIT_RP_NAK:
@@ -1519,7 +1519,7 @@ static int add_rm_dep_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_add_remove_service_dependency_async(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t from_handle,
     dinitctl_service_handle_t to_handle,
     int type,
@@ -1575,19 +1575,19 @@ DINITCTL_API int dinitctl_add_remove_service_dependency_async(
     return 0;
 }
 
-DINITCTL_API int dinitctl_add_remove_service_dependency_finish(dinitctl_t *ctl) {
+DINITCTL_API int dinitctl_add_remove_service_dependency_finish(dinitctl *ctl) {
     if (ctl->read_buf[0] == DINIT_RP_NAK) {
         return consume_enum(ctl, DINITCTL_ERROR);
     }
     return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
-static void trigger_cb(dinitctl_t *ctl, void *data) {
+static void trigger_cb(dinitctl *ctl, void *data) {
     *((int *)data) = dinitctl_set_service_trigger_finish(ctl);
 }
 
 DINITCTL_API int dinitctl_set_service_trigger(
-    dinitctl_t *ctl, dinitctl_service_handle_t handle, bool trigger
+    dinitctl *ctl, dinitctl_service_handle_t handle, bool trigger
 ) {
     int ret;
     if (!bleed_queue(ctl)) {
@@ -1604,7 +1604,7 @@ DINITCTL_API int dinitctl_set_service_trigger(
     return ret;
 }
 
-static int trigger_check(dinitctl_t *ctl) {
+static int trigger_check(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_ACK:
         case DINIT_RP_NAK:
@@ -1615,7 +1615,7 @@ static int trigger_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_set_service_trigger_async(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t handle,
     bool trigger,
     dinitctl_async_cb cb,
@@ -1647,19 +1647,19 @@ DINITCTL_API int dinitctl_set_service_trigger_async(
     return 0;
 }
 
-DINITCTL_API int dinitctl_set_service_trigger_finish(dinitctl_t *ctl) {
+DINITCTL_API int dinitctl_set_service_trigger_finish(dinitctl *ctl) {
     if (ctl->read_buf[0] == DINIT_RP_NAK) {
         return consume_enum(ctl, DINITCTL_ERROR);
     }
     return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
-static void signal_cb(dinitctl_t *ctl, void *data) {
+static void signal_cb(dinitctl *ctl, void *data) {
     *((int *)data) = dinitctl_signal_service_finish(ctl);
 }
 
 DINITCTL_API int dinitctl_signal_service(
-    dinitctl_t *ctl, dinitctl_service_handle_t handle, int signum
+    dinitctl *ctl, dinitctl_service_handle_t handle, int signum
 ) {
     int ret;
     if (!bleed_queue(ctl)) {
@@ -1676,7 +1676,7 @@ DINITCTL_API int dinitctl_signal_service(
     return ret;
 }
 
-static int signal_check(dinitctl_t *ctl) {
+static int signal_check(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_ACK:
         case DINIT_RP_NAK:
@@ -1690,7 +1690,7 @@ static int signal_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_signal_service_async(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t handle,
     int signum,
     dinitctl_async_cb cb,
@@ -1722,7 +1722,7 @@ DINITCTL_API int dinitctl_signal_service_async(
     return 0;
 }
 
-DINITCTL_API int dinitctl_signal_service_finish(dinitctl_t *ctl) {
+DINITCTL_API int dinitctl_signal_service_finish(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_NAK:
             return consume_enum(ctl, DINITCTL_ERROR);
@@ -1744,13 +1744,13 @@ struct list_services_ret {
     int code;
 };
 
-static void list_services_cb(dinitctl_t *ctl, void *data) {
+static void list_services_cb(dinitctl *ctl, void *data) {
     struct list_services_ret *ret = data;
     ret->code = dinitctl_list_services_finish(ctl, ret->out, ret->outs);
 }
 
 DINITCTL_API int dinitctl_list_services(
-    dinitctl_t *ctl, dinitctl_service_list_entry **entries, ssize_t *len
+    dinitctl *ctl, dinitctl_service_list_entry **entries, ssize_t *len
 ) {
     struct list_services_ret ret;
     if (!bleed_queue(ctl)) {
@@ -1767,7 +1767,7 @@ DINITCTL_API int dinitctl_list_services(
     return ret.code;
 }
 
-static int list_services_check(dinitctl_t *ctl) {
+static int list_services_check(dinitctl *ctl) {
     size_t sbufs, rsize;
     char *rbuf;
     switch (ctl->read_buf[0]) {
@@ -1817,7 +1817,7 @@ static int list_services_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_list_services_async(
-    dinitctl_t *ctl, dinitctl_async_cb cb, void *data
+    dinitctl *ctl, dinitctl_async_cb cb, void *data
 ) {
     char *buf;
     struct dinitctl_op *qop;
@@ -1844,7 +1844,7 @@ DINITCTL_API int dinitctl_list_services_async(
 }
 
 DINITCTL_API int dinitctl_list_services_finish(
-    dinitctl_t *ctl, dinitctl_service_list_entry **entries, ssize_t *len
+    dinitctl *ctl, dinitctl_service_list_entry **entries, ssize_t *len
 ) {
     size_t sbufs, nentries, wentries, cons = 0;
     char *buf = ctl->read_buf;
@@ -1931,11 +1931,11 @@ DINITCTL_API int dinitctl_list_services_finish(
     return DINITCTL_SUCCESS;
 }
 
-static void setenv_cb(dinitctl_t *ctl, void *data) {
+static void setenv_cb(dinitctl *ctl, void *data) {
     *((int *)data) = dinitctl_setenv_finish(ctl);
 }
 
-DINITCTL_API int dinitctl_setenv(dinitctl_t *ctl, char const *env_var) {
+DINITCTL_API int dinitctl_setenv(dinitctl *ctl, char const *env_var) {
     int ret;
     if (!bleed_queue(ctl)) {
         return -1;
@@ -1949,7 +1949,7 @@ DINITCTL_API int dinitctl_setenv(dinitctl_t *ctl, char const *env_var) {
     return ret;
 }
 
-static int setenv_check(dinitctl_t *ctl) {
+static int setenv_check(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_ACK:
             return 0;
@@ -1959,7 +1959,7 @@ static int setenv_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_setenv_async(
-    dinitctl_t *ctl, char const *env_var, dinitctl_async_cb cb, void *data
+    dinitctl *ctl, char const *env_var, dinitctl_async_cb cb, void *data
 ) {
     char *buf;
     char const *eq, *ev = NULL;
@@ -2020,15 +2020,15 @@ DINITCTL_API int dinitctl_setenv_async(
     return 0;
 }
 
-DINITCTL_API int dinitctl_setenv_finish(dinitctl_t *ctl) {
+DINITCTL_API int dinitctl_setenv_finish(dinitctl *ctl) {
     return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
-static void shutdown_cb(dinitctl_t *ctl, void *data) {
+static void shutdown_cb(dinitctl *ctl, void *data) {
     *((int *)data) = dinitctl_shutdown_finish(ctl);
 }
 
-DINITCTL_API int dinitctl_shutdown(dinitctl_t *ctl, int type) {
+DINITCTL_API int dinitctl_shutdown(dinitctl *ctl, int type) {
     int ret;
     if (!bleed_queue(ctl)) {
         return -1;
@@ -2042,7 +2042,7 @@ DINITCTL_API int dinitctl_shutdown(dinitctl_t *ctl, int type) {
     return ret;
 }
 
-static int shutdown_check(dinitctl_t *ctl) {
+static int shutdown_check(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_ACK:
             return 0;
@@ -2052,7 +2052,7 @@ static int shutdown_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_shutdown_async(
-    dinitctl_t *ctl, int type, dinitctl_async_cb cb, void *data
+    dinitctl *ctl, int type, dinitctl_async_cb cb, void *data
 ) {
     char *buf;
     struct dinitctl_op *qop;
@@ -2090,7 +2090,7 @@ DINITCTL_API int dinitctl_shutdown_async(
     return 0;
 }
 
-DINITCTL_API int dinitctl_shutdown_finish(dinitctl_t *ctl) {
+DINITCTL_API int dinitctl_shutdown_finish(dinitctl *ctl) {
     return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
@@ -2100,7 +2100,7 @@ struct dirs_ret {
     int code;
 };
 
-static void dirs_cb(dinitctl_t *ctl, void *data) {
+static void dirs_cb(dinitctl *ctl, void *data) {
     struct dirs_ret *ret = data;
     ret->code = dinitctl_query_service_dirs_finish(
         ctl, ret->dirs, ret->num_dirs
@@ -2108,7 +2108,7 @@ static void dirs_cb(dinitctl_t *ctl, void *data) {
 }
 
 DINITCTL_API int dinitctl_query_service_dirs(
-    dinitctl_t *ctl, char ***dirs, size_t *num_dirs
+    dinitctl *ctl, char ***dirs, size_t *num_dirs
 ) {
     struct dirs_ret ret;
     if (!bleed_queue(ctl)) {
@@ -2125,7 +2125,7 @@ DINITCTL_API int dinitctl_query_service_dirs(
     return ret.code;
 }
 
-static int dirs_check(dinitctl_t *ctl) {
+static int dirs_check(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_LOADER_MECH:
             return 0;
@@ -2143,7 +2143,7 @@ static int dirs_check(dinitctl_t *ctl) {
 }
 
 DINITCTL_API int dinitctl_query_service_dirs_async(
-    dinitctl_t *ctl, dinitctl_async_cb cb, void *data
+    dinitctl *ctl, dinitctl_async_cb cb, void *data
 ) {
     char *buf;
     struct dinitctl_op *qop;
@@ -2170,7 +2170,7 @@ DINITCTL_API int dinitctl_query_service_dirs_async(
 }
 
 DINITCTL_API int dinitctl_query_service_dirs_finish(
-    dinitctl_t *ctl, char ***dirs, size_t *num_dirs
+    dinitctl *ctl, char ***dirs, size_t *num_dirs
 ) {
     char *buf, *tbuf, *sbuf, *abuf, **rbuf;
     char ltype;

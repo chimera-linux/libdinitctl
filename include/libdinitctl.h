@@ -47,7 +47,7 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 
-typedef struct dinitctl_t dinitctl_t;
+typedef struct dinitctl dinitctl;
 typedef uint32_t dinitctl_service_handle_t;
 
 /** @brief Service status.
@@ -191,7 +191,7 @@ enum dinitctl_log_buffer_flag {
  * finish. Inside the callback you should invoke the _finish API to get
  * the return value(s).
  */
-typedef void (*dinitctl_async_cb)(dinitctl_t *ctl, void *data);
+typedef void (*dinitctl_async_cb)(dinitctl *ctl, void *data);
 
 /** @brief Service event callback.
  *
@@ -202,7 +202,7 @@ typedef void (*dinitctl_async_cb)(dinitctl_t *ctl, void *data);
  * One event callback is permitted per connection.
  */
 typedef void (*dinitctl_service_event_cb)(
-    dinitctl_t *ctl,
+    dinitctl *ctl,
     dinitctl_service_handle_t handle,
     int service_event,
     dinitctl_service_status const *status,
@@ -217,9 +217,9 @@ typedef void (*dinitctl_service_event_cb)(
  *
  * @param socket_path The socket path.
  *
- * @return A dinitctl_t handle.
+ * @return A dinitctl handle.
  */
-DINITCTL_API dinitctl_t *dinitctl_open(char const *socket_path);
+DINITCTL_API dinitctl *dinitctl_open(char const *socket_path);
 
 /** @brief Open a dinitctl handle via preopened file descriptor.
  *
@@ -240,13 +240,13 @@ DINITCTL_API dinitctl_t *dinitctl_open(char const *socket_path);
  *
  * @return A dinitctl handle.
  */
-DINITCTL_API dinitctl_t *dinitctl_open_fd(int fd);
+DINITCTL_API dinitctl *dinitctl_open_fd(int fd);
 
 /** @brief Close a dinitctl handle.
  *
  * The handle must be valid. All resources associated with it will be freed.
  */
-DINITCTL_API void dinitctl_close(dinitctl_t *ctl);
+DINITCTL_API void dinitctl_close(dinitctl *ctl);
 
 /** @brief Get the associated file descriptor.
  *
@@ -257,7 +257,7 @@ DINITCTL_API void dinitctl_close(dinitctl_t *ctl);
  *
  * @return The file descriptor.
  */
-DINITCTL_API int dinitctl_get_fd(dinitctl_t *ctl);
+DINITCTL_API int dinitctl_get_fd(dinitctl *ctl);
 
 /** @brief Dispatch events.
  *
@@ -292,7 +292,7 @@ DINITCTL_API int dinitctl_get_fd(dinitctl_t *ctl);
  *
  * @return The number of events processed.
  */
-DINITCTL_API int dinitctl_dispatch(dinitctl_t *ctl, int timeout, bool *ops_left);
+DINITCTL_API int dinitctl_dispatch(dinitctl *ctl, int timeout, bool *ops_left);
 
 /** @brief Set the service event callback.
  *
@@ -300,7 +300,7 @@ DINITCTL_API int dinitctl_dispatch(dinitctl_t *ctl, int timeout, bool *ops_left)
  *
  * This API cannot fail.
  */
-DINITCTL_API void dinitctl_set_service_event_callback(dinitctl_t *ctl, dinitctl_service_event_cb cb, void *data);
+DINITCTL_API void dinitctl_set_service_event_callback(dinitctl *ctl, dinitctl_service_event_cb cb, void *data);
 
 /** @brief Find or load a service by name.
  *
@@ -315,7 +315,7 @@ DINITCTL_API void dinitctl_set_service_event_callback(dinitctl_t *ctl, dinitctl_
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_load_service(dinitctl_t *ctl, char const *srv_name, bool find_only, dinitctl_service_handle_t *handle, int *state, int *target_state);
+DINITCTL_API int dinitctl_load_service(dinitctl *ctl, char const *srv_name, bool find_only, dinitctl_service_handle_t *handle, int *state, int *target_state);
 
 /** @brief Find or load a service by name.
  *
@@ -333,7 +333,7 @@ DINITCTL_API int dinitctl_load_service(dinitctl_t *ctl, char const *srv_name, bo
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_load_service_async(dinitctl_t *ctl, char const *srv_name, bool find_only, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_load_service_async(dinitctl *ctl, char const *srv_name, bool find_only, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish finding the service.
  *
@@ -354,7 +354,7 @@ DINITCTL_API int dinitctl_load_service_async(dinitctl_t *ctl, char const *srv_na
  *
  * @return 0 on success or one of the error codes.
  */
-DINITCTL_API int dinitctl_load_service_finish(dinitctl_t *ctl, dinitctl_service_handle_t *handle, int *state, int *target_state);
+DINITCTL_API int dinitctl_load_service_finish(dinitctl *ctl, dinitctl_service_handle_t *handle, int *state, int *target_state);
 
 /** @brief Unload or reload a service.
  *
@@ -366,7 +366,7 @@ DINITCTL_API int dinitctl_load_service_finish(dinitctl_t *ctl, dinitctl_service_
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_unload_service(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool reload);
+DINITCTL_API int dinitctl_unload_service(dinitctl *ctl, dinitctl_service_handle_t handle, bool reload);
 
 /** @brief Unload or reload a service.
  *
@@ -383,7 +383,7 @@ DINITCTL_API int dinitctl_unload_service(dinitctl_t *ctl, dinitctl_service_handl
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_unload_service_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool reload, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_unload_service_async(dinitctl *ctl, dinitctl_service_handle_t handle, bool reload, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish unloading or reloading the service name.
  *
@@ -396,7 +396,7 @@ DINITCTL_API int dinitctl_unload_service_async(dinitctl_t *ctl, dinitctl_service
  *
  * @return Zero on success or a positive error code.
  */
-DINITCTL_API int dinitctl_unload_service_finish(dinitctl_t *ctl);
+DINITCTL_API int dinitctl_unload_service_finish(dinitctl *ctl);
 
 /** @brief Try starting a service.
  *
@@ -408,7 +408,7 @@ DINITCTL_API int dinitctl_unload_service_finish(dinitctl_t *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_start_service(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin);
+DINITCTL_API int dinitctl_start_service(dinitctl *ctl, dinitctl_service_handle_t handle, bool pin);
 
 /** @brief Try starting a service.
  *
@@ -427,7 +427,7 @@ DINITCTL_API int dinitctl_start_service(dinitctl_t *ctl, dinitctl_service_handle
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_start_service_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_start_service_async(dinitctl *ctl, dinitctl_service_handle_t handle, bool pin, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the startup request.
  *
@@ -448,7 +448,7 @@ DINITCTL_API int dinitctl_start_service_async(dinitctl_t *ctl, dinitctl_service_
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_start_service_finish(dinitctl_t *ctl);
+DINITCTL_API int dinitctl_start_service_finish(dinitctl *ctl);
 
 /** @brief Try stopping a service.
  *
@@ -462,7 +462,7 @@ DINITCTL_API int dinitctl_start_service_finish(dinitctl_t *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_stop_service(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin, bool restart, bool gentle);
+DINITCTL_API int dinitctl_stop_service(dinitctl *ctl, dinitctl_service_handle_t handle, bool pin, bool restart, bool gentle);
 
 /** @brief Try stopping a service.
  *
@@ -486,7 +486,7 @@ DINITCTL_API int dinitctl_stop_service(dinitctl_t *ctl, dinitctl_service_handle_
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_stop_service_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin, bool restart, bool gentle, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_stop_service_async(dinitctl *ctl, dinitctl_service_handle_t handle, bool pin, bool restart, bool gentle, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the stop request.
  *
@@ -510,7 +510,7 @@ DINITCTL_API int dinitctl_stop_service_async(dinitctl_t *ctl, dinitctl_service_h
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_stop_service_finish(dinitctl_t *ctl);
+DINITCTL_API int dinitctl_stop_service_finish(dinitctl *ctl);
 
 /** @brief Try waking a service.
  *
@@ -522,7 +522,7 @@ DINITCTL_API int dinitctl_stop_service_finish(dinitctl_t *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_wake_service(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin);
+DINITCTL_API int dinitctl_wake_service(dinitctl *ctl, dinitctl_service_handle_t handle, bool pin);
 
 /** @brief Try waking a service.
  *
@@ -543,7 +543,7 @@ DINITCTL_API int dinitctl_wake_service(dinitctl_t *ctl, dinitctl_service_handle_
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_wake_service_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_wake_service_async(dinitctl *ctl, dinitctl_service_handle_t handle, bool pin, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the wake request.
  *
@@ -565,7 +565,7 @@ DINITCTL_API int dinitctl_wake_service_async(dinitctl_t *ctl, dinitctl_service_h
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_wake_service_finish(dinitctl_t *ctl);
+DINITCTL_API int dinitctl_wake_service_finish(dinitctl *ctl);
 
 /** @brief Try releasing a service.
  *
@@ -577,7 +577,7 @@ DINITCTL_API int dinitctl_wake_service_finish(dinitctl_t *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_release_service(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin);
+DINITCTL_API int dinitctl_release_service(dinitctl *ctl, dinitctl_service_handle_t handle, bool pin);
 
 /** @brief Try releasing a service.
  *
@@ -596,7 +596,7 @@ DINITCTL_API int dinitctl_release_service(dinitctl_t *ctl, dinitctl_service_hand
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_release_service_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_release_service_async(dinitctl *ctl, dinitctl_service_handle_t handle, bool pin, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the release request.
  *
@@ -615,7 +615,7 @@ DINITCTL_API int dinitctl_release_service_async(dinitctl_t *ctl, dinitctl_servic
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_release_service_finish(dinitctl_t *ctl);
+DINITCTL_API int dinitctl_release_service_finish(dinitctl *ctl);
 
 /** @brief Remove start/stop service pins.
  *
@@ -626,7 +626,7 @@ DINITCTL_API int dinitctl_release_service_finish(dinitctl_t *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_unpin_service(dinitctl_t *ctl, dinitctl_service_handle_t handle);
+DINITCTL_API int dinitctl_unpin_service(dinitctl *ctl, dinitctl_service_handle_t handle);
 
 /** @brief Remove start/stop service pins.
  *
@@ -645,7 +645,7 @@ DINITCTL_API int dinitctl_unpin_service(dinitctl_t *ctl, dinitctl_service_handle
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_unpin_service_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_unpin_service_async(dinitctl *ctl, dinitctl_service_handle_t handle, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the unpin.
  *
@@ -658,7 +658,7 @@ DINITCTL_API int dinitctl_unpin_service_async(dinitctl_t *ctl, dinitctl_service_
  *
  * @return Zero.
  */
-DINITCTL_API int dinitctl_unpin_service_finish(dinitctl_t *ctl);
+DINITCTL_API int dinitctl_unpin_service_finish(dinitctl *ctl);
 
 /** @brief Get service name.
  *
@@ -671,7 +671,7 @@ DINITCTL_API int dinitctl_unpin_service_finish(dinitctl_t *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_get_service_name(dinitctl_t *ctl, dinitctl_service_handle_t handle, char **name, ssize_t *buf_len);
+DINITCTL_API int dinitctl_get_service_name(dinitctl *ctl, dinitctl_service_handle_t handle, char **name, ssize_t *buf_len);
 
 /** @brief Get service name.
  *
@@ -687,7 +687,7 @@ DINITCTL_API int dinitctl_get_service_name(dinitctl_t *ctl, dinitctl_service_han
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_get_service_name_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_get_service_name_async(dinitctl *ctl, dinitctl_service_handle_t handle, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish getting the service name.
  *
@@ -716,7 +716,7 @@ DINITCTL_API int dinitctl_get_service_name_async(dinitctl_t *ctl, dinitctl_servi
  *
  * @return Zero on success or a positive error code.
  */
-DINITCTL_API int dinitctl_get_service_name_finish(dinitctl_t *ctl, char **name, ssize_t *buf_len);
+DINITCTL_API int dinitctl_get_service_name_finish(dinitctl *ctl, char **name, ssize_t *buf_len);
 
 /** @brief Get service log buffer.
  *
@@ -730,7 +730,7 @@ DINITCTL_API int dinitctl_get_service_name_finish(dinitctl_t *ctl, char **name, 
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_get_service_log(dinitctl_t *ctl, dinitctl_service_handle_t handle, int flags, char **log, ssize_t *buf_len);
+DINITCTL_API int dinitctl_get_service_log(dinitctl *ctl, dinitctl_service_handle_t handle, int flags, char **log, ssize_t *buf_len);
 
 /** @brief Get service log buffer.
  *
@@ -752,7 +752,7 @@ DINITCTL_API int dinitctl_get_service_log(dinitctl_t *ctl, dinitctl_service_hand
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_get_service_log_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, int flags, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_get_service_log_async(dinitctl *ctl, dinitctl_service_handle_t handle, int flags, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish getting the service log buffer.
  *
@@ -781,7 +781,7 @@ DINITCTL_API int dinitctl_get_service_log_async(dinitctl_t *ctl, dinitctl_servic
  *
  * @return Zero on success or a positive error code.
  */
-DINITCTL_API int dinitctl_get_service_log_finish(dinitctl_t *ctl, char **log, ssize_t *buf_len);
+DINITCTL_API int dinitctl_get_service_log_finish(dinitctl *ctl, char **log, ssize_t *buf_len);
 
 /** @brief Get service status.
  *
@@ -793,7 +793,7 @@ DINITCTL_API int dinitctl_get_service_log_finish(dinitctl_t *ctl, char **log, ss
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_get_service_status(dinitctl_t *ctl, dinitctl_service_handle_t handle, dinitctl_service_status *status);
+DINITCTL_API int dinitctl_get_service_status(dinitctl *ctl, dinitctl_service_handle_t handle, dinitctl_service_status *status);
 
 /** @brief Get service status.
  *
@@ -809,7 +809,7 @@ DINITCTL_API int dinitctl_get_service_status(dinitctl_t *ctl, dinitctl_service_h
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_get_service_status_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_get_service_status_async(dinitctl *ctl, dinitctl_service_handle_t handle, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish getting the service status.
  *
@@ -825,7 +825,7 @@ DINITCTL_API int dinitctl_get_service_status_async(dinitctl_t *ctl, dinitctl_ser
  *
  * @return Zero on success or a positive error code.
  */
-DINITCTL_API int dinitctl_get_service_status_finish(dinitctl_t *ctl, dinitctl_service_status *status);
+DINITCTL_API int dinitctl_get_service_status_finish(dinitctl *ctl, dinitctl_service_status *status);
 
 /** @brief Link two services together, or unlink them.
  *
@@ -840,7 +840,7 @@ DINITCTL_API int dinitctl_get_service_status_finish(dinitctl_t *ctl, dinitctl_se
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_add_remove_service_dependency(dinitctl_t *ctl, dinitctl_service_handle_t from_handle, dinitctl_service_handle_t to_handle, int type, bool remove, bool enable);
+DINITCTL_API int dinitctl_add_remove_service_dependency(dinitctl *ctl, dinitctl_service_handle_t from_handle, dinitctl_service_handle_t to_handle, int type, bool remove, bool enable);
 
 /** @brief Link two services together, or unlink them.
  *
@@ -864,7 +864,7 @@ DINITCTL_API int dinitctl_add_remove_service_dependency(dinitctl_t *ctl, dinitct
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_add_remove_service_dependency_async(dinitctl_t *ctl, dinitctl_service_handle_t from_handle, dinitctl_service_handle_t to_handle, int type, bool remove, bool enable, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_add_remove_service_dependency_async(dinitctl *ctl, dinitctl_service_handle_t from_handle, dinitctl_service_handle_t to_handle, int type, bool remove, bool enable, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the dependency setup.
  *
@@ -878,7 +878,7 @@ DINITCTL_API int dinitctl_add_remove_service_dependency_async(dinitctl_t *ctl, d
  *
  * @return Zero on success or a positive error code.
  */
-DINITCTL_API int dinitctl_add_remove_service_dependency_finish(dinitctl_t *ctl);
+DINITCTL_API int dinitctl_add_remove_service_dependency_finish(dinitctl *ctl);
 
 /** @brief Set the trigger value of a service.
  *
@@ -890,7 +890,7 @@ DINITCTL_API int dinitctl_add_remove_service_dependency_finish(dinitctl_t *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_set_service_trigger(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool trigger);
+DINITCTL_API int dinitctl_set_service_trigger(dinitctl *ctl, dinitctl_service_handle_t handle, bool trigger);
 
 /** @brief Set the trigger value of a service.
  *
@@ -907,7 +907,7 @@ DINITCTL_API int dinitctl_set_service_trigger(dinitctl_t *ctl, dinitctl_service_
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_set_service_trigger_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool trigger, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_set_service_trigger_async(dinitctl *ctl, dinitctl_service_handle_t handle, bool trigger, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish setting trigger value.
  *
@@ -920,7 +920,7 @@ DINITCTL_API int dinitctl_set_service_trigger_async(dinitctl_t *ctl, dinitctl_se
  *
  * @return Zero on success or a positive error code.
  */
-DINITCTL_API int dinitctl_set_service_trigger_finish(dinitctl_t *ctl);
+DINITCTL_API int dinitctl_set_service_trigger_finish(dinitctl *ctl);
 
 /** @brief Send a service a signal.
  *
@@ -932,7 +932,7 @@ DINITCTL_API int dinitctl_set_service_trigger_finish(dinitctl_t *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_signal_service(dinitctl_t *ctl, dinitctl_service_handle_t handle, int signum);
+DINITCTL_API int dinitctl_signal_service(dinitctl *ctl, dinitctl_service_handle_t handle, int signum);
 
 /** @brief Send a service a signal.
  *
@@ -948,7 +948,7 @@ DINITCTL_API int dinitctl_signal_service(dinitctl_t *ctl, dinitctl_service_handl
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_signal_service_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, int signum, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_signal_service_async(dinitctl *ctl, dinitctl_service_handle_t handle, int signum, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish signaling the service.
  *
@@ -964,7 +964,7 @@ DINITCTL_API int dinitctl_signal_service_async(dinitctl_t *ctl, dinitctl_service
  *
  * @return Zero on success or a positive error code.
  */
-DINITCTL_API int dinitctl_signal_service_finish(dinitctl_t *ctl);
+DINITCTL_API int dinitctl_signal_service_finish(dinitctl *ctl);
 
 /** @brief List services.
  *
@@ -976,7 +976,7 @@ DINITCTL_API int dinitctl_signal_service_finish(dinitctl_t *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_list_services(dinitctl_t *ctl, dinitctl_service_list_entry **entries, ssize_t *len);
+DINITCTL_API int dinitctl_list_services(dinitctl *ctl, dinitctl_service_list_entry **entries, ssize_t *len);
 
 /** @brief List services.
  *
@@ -990,7 +990,7 @@ DINITCTL_API int dinitctl_list_services(dinitctl_t *ctl, dinitctl_service_list_e
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_list_services_async(dinitctl_t *ctl, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_list_services_async(dinitctl *ctl, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish listing the services.
  *
@@ -1016,7 +1016,7 @@ DINITCTL_API int dinitctl_list_services_async(dinitctl_t *ctl, dinitctl_async_cb
  *
  * @return Zero on success or a negative error code.
  */
-DINITCTL_API int dinitctl_list_services_finish(dinitctl_t *ctl, dinitctl_service_list_entry **entries, ssize_t *len);
+DINITCTL_API int dinitctl_list_services_finish(dinitctl *ctl, dinitctl_service_list_entry **entries, ssize_t *len);
 
 /** @brief Set an environment variable in the dinit environment.
  *
@@ -1027,7 +1027,7 @@ DINITCTL_API int dinitctl_list_services_finish(dinitctl_t *ctl, dinitctl_service
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_setenv(dinitctl_t *ctl, char const *env_var);
+DINITCTL_API int dinitctl_setenv(dinitctl *ctl, char const *env_var);
 
 /** @brief Set an environment variable in the dinit environment.
  *
@@ -1046,7 +1046,7 @@ DINITCTL_API int dinitctl_setenv(dinitctl_t *ctl, char const *env_var);
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_setenv_async(dinitctl_t *ctl, char const *env_var, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_setenv_async(dinitctl *ctl, char const *env_var, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish setting the env var.
  *
@@ -1058,7 +1058,7 @@ DINITCTL_API int dinitctl_setenv_async(dinitctl_t *ctl, char const *env_var, din
  *
  * @return Zero.
  */
-DINITCTL_API int dinitctl_setenv_finish(dinitctl_t *ctl);
+DINITCTL_API int dinitctl_setenv_finish(dinitctl *ctl);
 
 /** @brief Shut down dinit and maybe system.
  *
@@ -1069,7 +1069,7 @@ DINITCTL_API int dinitctl_setenv_finish(dinitctl_t *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_shutdown(dinitctl_t *ctl, int type);
+DINITCTL_API int dinitctl_shutdown(dinitctl *ctl, int type);
 
 /** @brief Shut down dinit and maybe system.
  *
@@ -1086,7 +1086,7 @@ DINITCTL_API int dinitctl_shutdown(dinitctl_t *ctl, int type);
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_shutdown_async(dinitctl_t *ctl, int type, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_shutdown_async(dinitctl *ctl, int type, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the shutdown command.
  *
@@ -1098,7 +1098,7 @@ DINITCTL_API int dinitctl_shutdown_async(dinitctl_t *ctl, int type, dinitctl_asy
  *
  * @return Zero.
  */
-DINITCTL_API int dinitctl_shutdown_finish(dinitctl_t *ctl);
+DINITCTL_API int dinitctl_shutdown_finish(dinitctl *ctl);
 
 /** @brief Get the working directory and service dirs of dinit.
  *
@@ -1110,7 +1110,7 @@ DINITCTL_API int dinitctl_shutdown_finish(dinitctl_t *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_query_service_dirs(dinitctl_t *ctl, char ***dirs, size_t *num_dirs);
+DINITCTL_API int dinitctl_query_service_dirs(dinitctl *ctl, char ***dirs, size_t *num_dirs);
 
 /** @brief Get the working directory and service dirs of dinit.
  *
@@ -1125,7 +1125,7 @@ DINITCTL_API int dinitctl_query_service_dirs(dinitctl_t *ctl, char ***dirs, size
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_query_service_dirs_async(dinitctl_t *ctl, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_query_service_dirs_async(dinitctl *ctl, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish getting the directories.
  *
@@ -1145,7 +1145,7 @@ DINITCTL_API int dinitctl_query_service_dirs_async(dinitctl_t *ctl, dinitctl_asy
  *
  * @return Zero on success or non-zero on failure.
  */
-DINITCTL_API int dinitctl_query_service_dirs_finish(dinitctl_t *ctl, char ***dirs, size_t *num_dirs);
+DINITCTL_API int dinitctl_query_service_dirs_finish(dinitctl *ctl, char ***dirs, size_t *num_dirs);
 
 #ifdef __cplusplus
 }

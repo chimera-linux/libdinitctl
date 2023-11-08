@@ -7,14 +7,14 @@
 #define CTLBUF_SIZE 4096
 
 struct dinitctl_op {
-    int (*check_cb)(dinitctl_t *ctl);
+    int (*check_cb)(dinitctl *ctl);
     dinitctl_async_cb do_cb;
     void *do_data;
     void *finish_data;
     struct dinitctl_op *next;
 };
 
-struct dinitctl_t {
+struct dinitctl {
     /* service event callback */
     dinitctl_service_event_cb sv_event_cb;
     void *sv_event_data;
