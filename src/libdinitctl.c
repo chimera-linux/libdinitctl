@@ -930,6 +930,95 @@ DINITCTL_API int dinitctl_get_service_status_finish(
     return DINITCTL_SUCCESS;
 }
 
+static void add_dep_cb(dinitctl_t *ctl, void *data) {
+    *((int *)data) = dinitctl_add_service_dependency_finish(ctl);
+}
+
+DINITCTL_API int dinitctl_add_service_dependency(
+    dinitctl_t *ctl,
+    dinitctl_service_handle_t from_handle,
+    dinitctl_service_handle_t to_handle,
+    int type,
+    bool enable
+) {
+    int ret;
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    if (dinitctl_add_service_dependency_async(
+        ctl, from_handle, to_handle, type, enable, &add_dep_cb, &ret
+    ) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret;
+}
+
+static int add_dep_check(dinitctl_t *ctl) {
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_ACK:
+        case DINIT_RP_NAK:
+            return 0;
+    }
+    errno = EBADMSG;
+    return -1;
+}
+
+DINITCTL_API int dinitctl_add_service_dependency_async(
+    dinitctl_t *ctl,
+    dinitctl_service_handle_t from_handle,
+    dinitctl_service_handle_t to_handle,
+    int type,
+    bool enable,
+    dinitctl_async_cb cb,
+    void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    switch (type) {
+        case DINITCTL_DEPENDENCY_REGULAR:
+        case DINITCTL_DEPENDENCY_WAITS_FOR:
+        case DINITCTL_DEPENDENCY_MILESTONE:
+            break;
+        default:
+            errno = EINVAL;
+            return -1;
+    }
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, 2 + 2 * sizeof(from_handle), true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = enable ? DINIT_CP_ENABLESERVICE : DINIT_CP_ADD_DEP;
+    buf[1] = (char)type;
+    memcpy(&buf[2], &from_handle, sizeof(from_handle));
+    memcpy(&buf[2 + sizeof(from_handle)], &to_handle, sizeof(to_handle));
+
+    qop->check_cb = &add_dep_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_add_service_dependency_finish(dinitctl_t *ctl) {
+    if (ctl->read_buf[0] == DINIT_RP_NAK) {
+        return consume_enum(ctl, DINITCTL_ERROR);
+    }
+    return consume_enum(ctl, DINITCTL_SUCCESS);
+}
+
 static void trigger_cb(dinitctl_t *ctl, void *data) {
     *((int *)data) = dinitctl_set_service_trigger_finish(ctl);
 }
@@ -1268,14 +1357,10 @@ TODO:
 #define DINIT_CP_UNLOADSERVICE 9
 
 /* Add/remove dependency to existing service */
-#define DINIT_CP_ADD_DEP 11
 #define DINIT_CP_REM_DEP 12
 
 /* Query service load path / mechanism */
 #define DINIT_CP_QUERY_LOAD_MECH 13
-
-/* Add a waits for dependency from one service to another, and start the dependency */
-#define DINIT_CP_ENABLESERVICE 14
 
 /* Reload a service */
 #define DINIT_CP_RELOADSERVICE 16

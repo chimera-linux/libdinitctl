@@ -87,6 +87,13 @@ enum dinitctl_service_state {
     DINITCTL_SERVICE_STATE_STOPPING, /**< Currently stopping. */
 };
 
+/** @brief Dependency type. */
+enum dinitctl_dependency_type {
+    DINITCTL_DEPENDENCY_REGULAR = 0, /**< Regular hard dependency. */
+    DINITCTL_DEPENDENCY_WAITS_FOR = 2, /**< "Waits for" dependency. */
+    DINITCTL_DEPENDENCY_MILESTONE, /**< Milestone dependency. */
+};
+
 /** @brief Service stop reason. */
 enum dinitctl_service_stop_reason {
     DINITCTL_SERVICE_STOP_REASON_NORMAL = 0, /**< Normally stopped. */
@@ -361,7 +368,7 @@ DINITCTL_API int dinitctl_get_service_name_async(dinitctl_t *ctl, dinitctl_servi
  * @param[out] name The name.
  * @param[inout] buf_len Optional buffer length.
  *
- * @return Zero on success or a positive or negative error code.
+ * @return Zero on success or a positive error code.
  */
 DINITCTL_API int dinitctl_get_service_name_finish(dinitctl_t *ctl, char **name, size_t *buf_len);
 
@@ -426,9 +433,58 @@ DINITCTL_API int dinitctl_get_service_status_async(dinitctl_t *ctl, dinitctl_ser
  * @param[out] exec_stage The service exec stage.
  * @param[out] exit_status The service exit status or errno.
  *
- * @return Zero on success or a positive or negative error code.
+ * @return Zero on success or a positive error code.
  */
 DINITCTL_API int dinitctl_get_service_status_finish(dinitctl_t *ctl, int *state, int *target_state, pid_t *pid, int *flags, int *stop_reason, int *exec_stage, int *exit_status);
+
+/** @brief Link two services together.
+ *
+ * Synchronous variant of dinitctl_add_service_dependency_async().
+ *
+ * @param ctl The dinitctl.
+ * @param from_handle The service to gain the dependency.
+ * @param to_handle The service to become the dependency.
+ * @param type The dependency type.
+ * @param enable Whether to start the dependency.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_add_service_dependency(dinitctl_t *ctl, dinitctl_service_handle_t from_handle, dinitctl_service_handle_t to_handle, int type, bool enable);
+
+/** @brief Link two services together.
+ *
+ * The from_handle will gain a dependency on to_handle. If enable is
+ * specified, the dependency will also be started (as if `dinitctl enable`)
+ * but only if the from_handle is started or starting already.
+ *
+ * This API may fail with ENOMEM or with EINVAL if the given dependency
+ * type is not valid.
+ *
+ * @param ctl The dinitctl.
+ * @param from_handle The service to gain the dependency.
+ * @param to_handle The service to become the dependency.
+ * @param type The dependency type.
+ * @param enable Whether to start the dependency.
+ * @param cb The callback.
+ * @param data The data to pass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_add_service_dependency_async(dinitctl_t *ctl, dinitctl_service_handle_t from_handle, dinitctl_service_handle_t to_handle, int type, bool enable, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish the dependency setup.
+ *
+ * Invoked from the callback to dinitctl_add_service_dependency_async().
+ *
+ * May fail with DINITCTL_ERROR if the dependency cannot be created, for
+ * instance if the dependency states contradict or if it would create a
+ * loop.
+ *
+ * @param ctl The dinitctl.
+ *
+ * @return Zero on success or a positive error code.
+ */
+DINITCTL_API int dinitctl_add_service_dependency_finish(dinitctl_t *ctl);
 
 /** @brief Set the trigger value of a service.
  *
@@ -468,7 +524,7 @@ DINITCTL_API int dinitctl_set_service_trigger_async(dinitctl_t *ctl, dinitctl_se
  *
  * @param ctl The dinitctl.
  *
- * @return Zero on success or a positive or negative error code.
+ * @return Zero on success or a positive error code.
  */
 DINITCTL_API int dinitctl_set_service_trigger_finish(dinitctl_t *ctl);
 
@@ -512,7 +568,7 @@ DINITCTL_API int dinitctl_signal_service_async(dinitctl_t *ctl, dinitctl_service
  *
  * @param ctl The dinitctl.
  *
- * @return Zero on success or a positive or negative error code.
+ * @return Zero on success or a positive error code.
  */
 DINITCTL_API int dinitctl_signal_service_finish(dinitctl_t *ctl);
 
