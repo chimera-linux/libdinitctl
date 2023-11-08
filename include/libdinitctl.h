@@ -584,6 +584,49 @@ DINITCTL_API int dinitctl_release_service_async(dinitctl_t *ctl, dinitctl_servic
  */
 DINITCTL_API int dinitctl_release_service_finish(dinitctl_t *ctl);
 
+/** @brief Remove start/stop service pins.
+ *
+ * Synchronous variant of dinitctl_unpin_service_async().
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_unpin_service(dinitctl_t *ctl, dinitctl_service_handle_t handle);
+
+/** @brief Remove start/stop service pins.
+ *
+ * This will clear start and/or stop pins from a service. If the service
+ * is started, is not explicitly activated, and has no active dependents,
+ * it will stop. If the service is stopped and has a dependent service
+ * that is starting, it will start. Otherwise, any pending start/stop
+ * will be done.
+ *
+ * May only fail with ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param cb The callback.
+ * @param data The data to tpass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_unpin_service_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish the unpin.
+ *
+ * Invoked from the callback to dinitctl_unpin_service_async().
+ *
+ * Keep in mind that no state change wait is performed. This call
+ * may also not fail.
+ *
+ * @param ctl The dinitctl.
+ *
+ * @return Zero.
+ */
+DINITCTL_API int dinitctl_unpin_service_finish(dinitctl_t *ctl);
+
 /** @brief Get service name.
  *
  * Synchronous variant of dinitctl_get_service_name_async().

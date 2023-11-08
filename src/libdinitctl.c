@@ -1094,6 +1094,70 @@ DINITCTL_API int dinitctl_release_service_finish(dinitctl_t *ctl) {
     return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
+static void unpin_cb(dinitctl_t *ctl, void *data) {
+    *((int *)data) = dinitctl_unpin_service_finish(ctl);
+}
+
+DINITCTL_API int dinitctl_unpin_service(
+    dinitctl_t *ctl, dinitctl_service_handle_t handle
+) {
+    int ret;
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    if (dinitctl_unpin_service_async(ctl, handle, &unpin_cb, &ret) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret;
+}
+
+static int unpin_check(dinitctl_t *ctl) {
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_ACK:
+            return 0;
+    }
+    errno = EBADMSG;
+    return -1;
+}
+
+DINITCTL_API int dinitctl_unpin_service_async(
+    dinitctl_t *ctl,
+    dinitctl_service_handle_t handle,
+    dinitctl_async_cb cb,
+    void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, 1 + sizeof(handle), true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = DINIT_CP_UNPINSERVICE;
+    memcpy(&buf[2], &handle, sizeof(handle));
+
+    qop->check_cb = &unpin_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_unpin_service_finish(dinitctl_t *ctl) {
+    return consume_enum(ctl, DINITCTL_SUCCESS);
+}
+
 struct get_service_name_ret {
     char **out;
     size_t *outs;
@@ -2050,8 +2114,6 @@ DINITCTL_API int dinitctl_query_service_dirs_finish(
 #if 0
 
 TODO:
-
-#define DINIT_CP_UNPINSERVICE 7
 
 /* List services */
 #define DINIT_CP_LISTSERVICES 8
