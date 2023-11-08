@@ -17,4 +17,5 @@ library(
     include_directories: include_directories('include', 'src'),
     install: true,
     version: meson.project_version(),
+    gnu_symbol_visibility: 'hidden',
 )
