@@ -23,6 +23,11 @@
  * values) and a negative value means an unrecoverable error (in which case
  * errno is set and the connection should be aborted and reestablished).
  *
+ * All responses may fail with ENOMEM (even if not mentioned) even if the
+ * client has not run out of memory; this means dinit itself has run out of
+ * memory. This is considered an unrecoverable condition, as it means the
+ * connection will be closed by the remote side.
+ *
  * @copyright See COPYING.md in the project tree.
  */
 
@@ -342,8 +347,7 @@ DINITCTL_API int dinitctl_get_service_name_async(dinitctl_t *ctl, dinitctl_servi
  * responsible for freeing it.
  *
  * May fail with DINITCTL_ERROR (in case of rejection by remote side)
- * or unrecoverably (with EBADMSG or ENOMEM, the latter may indicate
- * dinit itself running out of memory).
+ * or unrecoverably (with EBADMSG or general conditions).
  *
  * @param ctl The dinitctl.
  * @param[out] name The name.
@@ -403,8 +407,7 @@ DINITCTL_API int dinitctl_get_service_status_async(dinitctl_t *ctl, dinitctl_ser
  * the exit status code for stopped services whose process failed.
  *
  * May fail with DINITCTL_ERROR (in case of rejection by remote side)
- * or unrecoverably (with EBADMSG or ENOMEM, the latter may indicate
- * dinit itself running out of memory).
+ * or unrecoverably (with EBADMSG or general conditions).
  *
  * @param ctl The dinitctl.
  * @param[out] state The service state.

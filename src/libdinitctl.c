@@ -323,6 +323,10 @@ DINITCTL_API int dinitctl_dispatch(dinitctl_t *ctl, int timeout, bool *ops_left)
             nop->next = op;
             op = ctl->op_queue = nop;
         }
+        if (ctl->read_buf[0] == DINIT_RP_OOM) {
+            errno = ENOMEM;
+            return -1;
+        }
         int chk = op->check_cb(ctl);
         if (chk < 0) {
             /* error */
@@ -664,9 +668,6 @@ DINITCTL_API int dinitctl_load_service_finish(
                 goto default_err;
             }
             return consume_error(ctl, DINITCTL_ERROR_SERVICE_LOAD);
-        case DINIT_RP_OOM:
-            errno = ctl->errnov = ENOMEM;
-            return -1;
         case DINIT_RP_SERVICERECORD:
             break;
         default_err:
@@ -788,9 +789,6 @@ DINITCTL_API int dinitctl_get_service_name_finish(
     switch (ctl->read_buf[0]) {
         case DINIT_RP_NAK:
             return consume_error(ctl, DINITCTL_ERROR);
-        case DINIT_RP_OOM:
-            errno = ctl->errnov = ENOMEM;
-            return -1;
         case DINIT_RP_SERVICENAME:
             break;
         default:
@@ -933,9 +931,6 @@ DINITCTL_API int dinitctl_get_service_status_finish(
     switch (ctl->read_buf[0]) {
         case DINIT_RP_NAK:
             return consume_error(ctl, DINITCTL_ERROR);
-        case DINIT_RP_OOM:
-            errno = ctl->errnov = ENOMEM;
-            return -1;
         case DINIT_RP_SERVICESTATUS:
             break;
         default:
