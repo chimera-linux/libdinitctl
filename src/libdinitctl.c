@@ -679,6 +679,77 @@ DINITCTL_API int dinitctl_load_service_finish(
     return DINITCTL_SUCCESS;
 }
 
+static void unload_cb(dinitctl_t *ctl, void *data) {
+    *((int *)data) = dinitctl_unload_service_finish(ctl);
+}
+
+DINITCTL_API int dinitctl_unload_service(
+    dinitctl_t *ctl, dinitctl_service_handle_t handle, bool reload
+) {
+    int ret;
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    if (dinitctl_unload_service_async(
+        ctl, handle, reload, &unload_cb, &ret
+    ) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret;
+}
+
+static int unload_check(dinitctl_t *ctl) {
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_ACK:
+        case DINIT_RP_NAK:
+            return 0;
+    }
+    errno = EBADMSG;
+    return -1;
+}
+
+DINITCTL_API int dinitctl_unload_service_async(
+    dinitctl_t *ctl,
+    dinitctl_service_handle_t handle,
+    bool reload,
+    dinitctl_async_cb cb,
+    void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, 1 + sizeof(handle), true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = reload ? DINIT_CP_RELOADSERVICE : DINIT_CP_UNLOADSERVICE;
+    memcpy(&buf[1], &handle, sizeof(handle));
+
+    qop->check_cb = &unload_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_unload_service_finish(dinitctl_t *ctl) {
+    if (ctl->read_buf[0] == DINIT_RP_NAK) {
+        return consume_enum(ctl, DINITCTL_ERROR);
+    }
+    return consume_enum(ctl, DINITCTL_SUCCESS);
+}
+
 struct get_service_name_ret {
     char **out;
     size_t *outs;
@@ -1365,14 +1436,8 @@ TODO:
 /* List services */
 #define DINIT_CP_LISTSERVICES 8
 
-/* Unload a service */
-#define DINIT_CP_UNLOADSERVICE 9
-
 /* Query service load path / mechanism */
 #define DINIT_CP_QUERY_LOAD_MECH 13
-
-/* Reload a service */
-#define DINIT_CP_RELOADSERVICE 16
 
 /* Retrieve buffered output */
 #define DINIT_CP_CATLOG 20

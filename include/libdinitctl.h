@@ -314,6 +314,48 @@ DINITCTL_API int dinitctl_load_service_async(dinitctl_t *ctl, char const *srv_na
  */
 DINITCTL_API int dinitctl_load_service_finish(dinitctl_t *ctl, dinitctl_service_handle_t *handle, int *state, int *target_state);
 
+/** @brief Unload or reload a service.
+ *
+ * Synchronous variant of dinitctl_unload_service_async().
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param reload Whether to reload the service.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_unload_service(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool reload);
+
+/** @brief Unload or reload a service.
+ *
+ * This will unload or reload the given service, which was previously
+ * found with dinitctl_load_service_async().
+ *
+ * May only fail with ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param reload Whether to reload the service.
+ * @param cb The callback.
+ * @param data The data to pass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_unload_service_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool reload, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish unloading or reloading the service name.
+ *
+ * Invoked from the callback to dinitctl_unload_service_async().
+ *
+ * May fail with DINITCTL_ERROR (in case of rejection by remote side).
+ * No unrecoverable errors are possible.
+ *
+ * @param ctl The dinitctl.
+ *
+ * @return Zero on success or a positive error code.
+ */
+DINITCTL_API int dinitctl_unload_service_finish(dinitctl_t *ctl);
+
 /** @brief Get service name.
  *
  * Synchronous variant of dinitctl_get_service_name_async().
