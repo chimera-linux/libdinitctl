@@ -594,9 +594,6 @@ DINITCTL_API int dinitctl_load_service(
 }
 
 static int load_service_check(dinitctl *ctl) {
-    struct dinitctl_op *op = ctl->op_queue;
-    char msg = (char)(uintptr_t)op->finish_data;
-
     switch (ctl->read_buf[0]) {
         case DINIT_RP_SERVICERECORD:
             if (ctl->read_size < (sizeof(uint32_t) + 3)) {
@@ -607,7 +604,7 @@ static int load_service_check(dinitctl *ctl) {
             return 0;
         case DINIT_RP_SERVICE_DESC_ERR:
         case DINIT_RP_SERVICE_LOAD_ERR:
-            if (msg == DINIT_CP_FINDSERVICE) {
+            if (ctl->op_queue->flag) {
                 return -1;
             }
             return 0;
@@ -652,7 +649,7 @@ DINITCTL_API int dinitctl_load_service_async(
     qop->check_cb = &load_service_check;
     qop->do_cb = cb;
     qop->do_data = data;
-    qop->finish_data = (void *)(uintptr_t)buf[0];
+    qop->flag = find_only;
 
     queue_op(ctl, qop);
 
@@ -876,9 +873,6 @@ DINITCTL_API int dinitctl_stop_service(
 }
 
 static int stop_check(dinitctl *ctl) {
-    struct dinitctl_op *op = ctl->op_queue;
-    bool gentle = (bool)(uintptr_t)op->finish_data;
-
     switch (ctl->read_buf[0]) {
         case DINIT_RP_ACK:
         case DINIT_RP_SHUTTINGDOWN:
@@ -887,7 +881,7 @@ static int stop_check(dinitctl *ctl) {
         case DINIT_RP_NAK:
             return 0;
         case DINIT_RP_DEPENDENTS:
-            if (gentle) {
+            if (ctl->op_queue->flag) {
                 return 0;
             }
             break;
@@ -930,7 +924,7 @@ DINITCTL_API int dinitctl_stop_service_async(
     qop->check_cb = &stop_check;
     qop->do_cb = cb;
     qop->do_data = data;
-    qop->finish_data = (void *)(uintptr_t)gentle;
+    qop->flag = gentle;
 
     queue_op(ctl, qop);
 

@@ -10,8 +10,8 @@ struct dinitctl_op {
     int (*check_cb)(dinitctl *ctl);
     dinitctl_async_cb do_cb;
     void *do_data;
-    void *finish_data;
     struct dinitctl_op *next;
+    bool flag;
 };
 
 struct dinitctl {
