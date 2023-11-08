@@ -770,6 +770,53 @@ DINITCTL_API int dinitctl_shutdown_async(dinitctl_t *ctl, int type, dinitctl_asy
  */
 DINITCTL_API int dinitctl_shutdown_finish(dinitctl_t *ctl);
 
+/** @brief Get the working directory and service dirs of dinit.
+ *
+ * Synchronous variant of dinitctl_query_service_dirs_async().
+ *
+ * @param ctl The dinitctl.
+ * @param[out] dirs The directories.
+ * @param[out] num_dirs Number of directories.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_query_service_dirs(dinitctl_t *ctl, char ***dirs, size_t *num_dirs);
+
+/** @brief Get the working directory and service dirs of dinit.
+ *
+ * This retrieves the current working directory of the current
+ * dinit instance along with its service directories.
+ *
+ * This API may only fail with ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param cb The callback.
+ * @param data The data to pass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_query_service_dirs_async(dinitctl_t *ctl, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish getting the directories.
+ *
+ * The directories are written in dirs, and their number (which is the number
+ * of service directories plus the current working directory) in num_dirs.
+ * The first directory in the array is the current working directory, and
+ * service directories follow it in priority order.
+ *
+ * The array must be freed with free().
+ *
+ * This call may fail with DINITCTL_ERROR, or with ENOMEM if the dirs
+ * array allocation fails.
+ *
+ * @param ctl The dinitctl.
+ * @param[out] dirs The directories.
+ * @param[out] num_dirs Number of directories.
+ *
+ * @return Zero on success or non-zero on failure.
+ */
+DINITCTL_API int dinitctl_query_service_dirs_finish(dinitctl_t *ctl, char ***dirs, size_t *num_dirs);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1555,6 +1555,154 @@ DINITCTL_API int dinitctl_shutdown_finish(dinitctl_t *ctl) {
     return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
+struct dirs_ret {
+    char ***dirs;
+    size_t *num_dirs;
+    int code;
+};
+
+static void dirs_cb(dinitctl_t *ctl, void *data) {
+    struct dirs_ret *ret = data;
+    ret->code = dinitctl_query_service_dirs_finish(
+        ctl, ret->dirs, ret->num_dirs
+    );
+}
+
+DINITCTL_API int dinitctl_query_service_dirs(
+    dinitctl_t *ctl, char ***dirs, size_t *num_dirs
+) {
+    struct dirs_ret ret;
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    ret.dirs = dirs;
+    ret.num_dirs = num_dirs;
+    if (dinitctl_query_service_dirs_async(ctl, &dirs_cb, &ret) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret.code;
+}
+
+static int dirs_check(dinitctl_t *ctl) {
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_LOADER_MECH:
+            return 0;
+        case DINIT_RP_ACK: {
+            uint32_t psize;
+            if (ctl->read_size < (sizeof(psize) + 2)) {
+                return 1;
+            }
+            memcpy(&psize, &ctl->read_buf[2], sizeof(psize));
+            return (ctl->read_size < psize);
+        }
+    }
+    errno = EBADMSG;
+    return -1;
+}
+
+DINITCTL_API int dinitctl_query_service_dirs_async(
+    dinitctl_t *ctl, dinitctl_async_cb cb, void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, 1, true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = DINIT_CP_QUERY_LOAD_MECH;
+
+    qop->check_cb = &dirs_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_query_service_dirs_finish(
+    dinitctl_t *ctl, char ***dirs, size_t *num_dirs
+) {
+    char *buf, *tbuf, *sbuf, *abuf, **rbuf;
+    char ltype;
+    uint32_t psize, ndirs;
+    size_t asize;
+
+    if (ctl->read_buf[0] == DINIT_RP_NAK) {
+        return consume_enum(ctl, DINITCTL_ERROR);
+    }
+
+    buf = ctl->read_buf + 1;
+
+    ltype = *buf++;
+    memcpy(&psize, buf, sizeof(psize));
+    buf += sizeof(psize);
+
+    /* SSET_TYPE_DIRLOAD */
+    if (ltype != 1) {
+        consume_recvbuf(ctl, psize);
+        return DINITCTL_ERROR;
+    }
+
+    memcpy(&ndirs, buf, sizeof(ndirs));
+    buf += sizeof(ndirs);
+
+    /* compute the total size we need to allocate */
+    asize = (ndirs + 1) * sizeof(char *); /* pointers */
+
+    /* go through the buffer to add the actual string lengths */
+    tbuf = buf;
+    for (size_t nleft = ndirs + 1; nleft; --nleft) {
+        uint32_t slen;
+        memcpy(&slen, tbuf, sizeof(slen));
+        tbuf += sizeof(slen);
+        tbuf += slen;
+        asize += slen + 1; /* string with null termination */
+    }
+
+    /* now allocate a buffer big enough */
+    abuf = malloc(asize);
+    if (!abuf) {
+        return -1;
+    }
+
+    rbuf = (char **)abuf;
+    sbuf = abuf + (ndirs + 1) * sizeof(char *);
+
+    /* write all the strings */
+    tbuf = buf;
+    for (size_t nleft = ndirs + 1; nleft; --nleft) {
+        uint32_t slen;
+        memcpy(&slen, tbuf, sizeof(slen));
+        tbuf += sizeof(slen);
+        /* string goes in the string portion, terminated */
+        memcpy(sbuf, tbuf, slen);
+        sbuf[slen] = '\0';
+        /* pointer to it goes in the pointer section */
+        *rbuf++ = sbuf;
+        /* move on to next string */
+        sbuf += slen + 1;
+        tbuf += slen;
+    }
+
+    /* done reading */
+    *dirs = (char **)abuf;
+    *num_dirs = ndirs + 1;
+
+    consume_recvbuf(ctl, psize);
+    return DINITCTL_SUCCESS;
+}
+
 #if 0
 
 TODO:
@@ -1569,9 +1717,6 @@ TODO:
 
 /* List services */
 #define DINIT_CP_LISTSERVICES 8
-
-/* Query service load path / mechanism */
-#define DINIT_CP_QUERY_LOAD_MECH 13
 
 
 #endif
