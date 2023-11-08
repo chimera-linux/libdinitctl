@@ -1258,6 +1258,7 @@ DINITCTL_API int dinitctl_get_service_name_finish(
 ) {
     uint16_t nlen;
     size_t alen, wlen;
+    int ret = DINITCTL_SUCCESS;
 
     if (ctl->read_buf[0] == DINIT_RP_NAK) {
         return consume_enum(ctl, DINITCTL_ERROR);
@@ -1270,13 +1271,14 @@ DINITCTL_API int dinitctl_get_service_name_finish(
         /* allocate the storage */
         *name = malloc(alen + 1);
         if (!*name) {
-            return -1;
+            ret = -1;
+            goto do_ret;
         }
         wlen = alen;
     } else if (!*buf_len) {
         /* pure length query */
         *buf_len = alen;
-        return DINITCTL_SUCCESS;
+        goto do_ret;
     } else {
         wlen = *buf_len - 1;
         if (alen < wlen) {
@@ -1289,8 +1291,9 @@ DINITCTL_API int dinitctl_get_service_name_finish(
     *name[wlen] = '\0';
     *buf_len = alen;
 
+do_ret:
     consume_recvbuf(ctl, nlen + sizeof(nlen) + 2);
-    return DINITCTL_SUCCESS;
+    return ret;
 }
 
 struct get_service_log_ret {
@@ -1390,6 +1393,7 @@ DINITCTL_API int dinitctl_get_service_log_async(
 DINITCTL_API int dinitctl_get_service_log_finish(
     dinitctl *ctl, char **log, ssize_t *buf_len
 ) {
+    int ret = DINITCTL_SUCCESS;
     unsigned int nlen;
     size_t alen, wlen;
 
@@ -1404,13 +1408,14 @@ DINITCTL_API int dinitctl_get_service_log_finish(
         /* allocate the storage */
         *log = malloc(alen + 1);
         if (!*log) {
-            return -1;
+            ret = -1;
+            goto do_ret;
         }
         wlen = alen;
     } else if (!*buf_len) {
         /* pure length query */
         *buf_len = alen;
-        return DINITCTL_SUCCESS;
+        goto do_ret;
     } else {
         wlen = *buf_len - 1;
         if (alen < wlen) {
@@ -1423,8 +1428,9 @@ DINITCTL_API int dinitctl_get_service_log_finish(
     *log[wlen] = '\0';
     *buf_len = alen;
 
+do_ret:
     consume_recvbuf(ctl, nlen + sizeof(nlen) + 2);
-    return DINITCTL_SUCCESS;
+    return ret;
 }
 
 struct get_service_status_ret {
@@ -1874,6 +1880,7 @@ DINITCTL_API int dinitctl_list_services_async(
 DINITCTL_API int dinitctl_list_services_finish(
     dinitctl *ctl, dinitctl_service_list_entry **entries, ssize_t *len
 ) {
+    int ret = DINITCTL_SUCCESS;
     size_t sbufs, nentries, wentries, cons = 0;
     char *buf = ctl->read_buf;
     dinitctl_service_list_entry *curentry;
@@ -1928,12 +1935,15 @@ DINITCTL_API int dinitctl_list_services_finish(
     /* we already wrote them */
     if (*len >= 0) {
         *len = nentries;
-        consume_recvbuf(ctl, cons);
-        return DINITCTL_SUCCESS;
+        goto do_ret;
     }
 
     /* otherwise allocate and loop again */
     *entries = malloc(sizeof(dinitctl_service_list_entry) * nentries);
+    if (!*entries) {
+        ret = -1;
+        goto do_ret;
+    }
     *len = nentries;
     curentry = *entries;
 
@@ -1955,8 +1965,9 @@ DINITCTL_API int dinitctl_list_services_finish(
         buf += sbufs + namlen + 2;
     }
 
+do_ret:
     consume_recvbuf(ctl, cons);
-    return DINITCTL_SUCCESS;
+    return ret;
 }
 
 static void setenv_cb(dinitctl *ctl, void *data) {
@@ -2195,6 +2206,7 @@ DINITCTL_API int dinitctl_query_service_dirs_async(
 DINITCTL_API int dinitctl_query_service_dirs_finish(
     dinitctl *ctl, char ***dirs, size_t *num_dirs
 ) {
+    int ret = DINITCTL_SUCCESS;
     char *buf, *tbuf, *sbuf, *abuf, **rbuf;
     char ltype;
     uint32_t psize, ndirs;
@@ -2212,8 +2224,8 @@ DINITCTL_API int dinitctl_query_service_dirs_finish(
 
     /* SSET_TYPE_DIRLOAD */
     if (ltype != 1) {
-        consume_recvbuf(ctl, psize);
-        return DINITCTL_ERROR;
+        ret = DINITCTL_ERROR;
+        goto do_ret;
     }
 
     memcpy(&ndirs, buf, sizeof(ndirs));
@@ -2235,7 +2247,8 @@ DINITCTL_API int dinitctl_query_service_dirs_finish(
     /* now allocate a buffer big enough */
     abuf = malloc(asize);
     if (!abuf) {
-        return -1;
+        ret = -1;
+        goto do_ret;
     }
 
     rbuf = (char **)abuf;
@@ -2261,6 +2274,7 @@ DINITCTL_API int dinitctl_query_service_dirs_finish(
     *dirs = (char **)abuf;
     *num_dirs = ndirs + 1;
 
+do_ret:
     consume_recvbuf(ctl, psize);
-    return DINITCTL_SUCCESS;
+    return ret;
 }
