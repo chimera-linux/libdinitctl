@@ -60,6 +60,9 @@ enum dinitctl_error {
     DINITCTL_ERROR_SERVICE_MISSING, /**< Service could not be found. */
     DINITCTL_ERROR_SERVICE_DESC, /**< Service description error. */
     DINITCTL_ERROR_SERVICE_LOAD, /**< Service load error. */
+    DINITCTL_ERROR_SERVICE_NO_PID, /**< Service has no PID. */
+    DINITCTL_ERROR_SERVICE_BAD_SIGNAL, /**< Signal out of range. */
+    DINITCTL_ERROR_SERVICE_SIGNAL_FAILED, /**< Signal has failed. */
 };
 
 /** @brief Service status flags.
@@ -468,6 +471,50 @@ DINITCTL_API int dinitctl_set_service_trigger_async(dinitctl_t *ctl, dinitctl_se
  * @return Zero on success or a positive or negative error code.
  */
 DINITCTL_API int dinitctl_set_service_trigger_finish(dinitctl_t *ctl);
+
+/** @brief Send a service a signal.
+ *
+ * Synchronous variant of dinitctl_signal_service_async().
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param signum The signal value.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_signal_service(dinitctl_t *ctl, dinitctl_service_handle_t handle, int signum);
+
+/** @brief Send a service a signal.
+ *
+ * This sends the given signal to the given service.
+ *
+ * This API may only fail with ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param signum The signal value.
+ * @param cb The callback.
+ * @param data The data to pass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_signal_service_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, int signum, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish signaling the service.
+ *
+ * Invoked from the callback to dinitctl_service_signal_async().
+ *
+ * May fail with DINITCTL_ERROR if the input handle is rejected, or
+ * with DINITCTL_ERROR_SERVICE_NO_PID if the service has no PID to signal,
+ * with DINITCTL_ERROR_SERVICE_SIGNAL_FAILED if the signaling failed,
+ * or with DINITCTL_ERROR_SERVICE_BAD_SIGNAL if the input signal was bad.
+ * No unrecoverable errors are possible.
+ *
+ * @param ctl The dinitctl.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_signal_service_finish(dinitctl_t *ctl);
 
 /** @brief Set an environment variable in the dinit environment.
  *

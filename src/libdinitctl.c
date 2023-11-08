@@ -63,9 +63,9 @@ static void update_recvbuf(dinitctl_t *ctl, char *nbuf) {
     consume_recvbuf(ctl, (nbuf - ctl->read_buf));
 }
 
-static int consume_error(dinitctl_t *ctl, int err) {
+static int consume_enum(dinitctl_t *ctl, int val) {
     consume_recvbuf(ctl, 1);
-    return err;
+    return val;
 }
 
 static struct dinitctl_op *new_op(dinitctl_t *ctl) {
@@ -649,11 +649,11 @@ DINITCTL_API int dinitctl_load_service_finish(
 
     switch (ctl->read_buf[0]) {
         case DINIT_RP_NOSERVICE:
-            return consume_error(ctl, DINITCTL_ERROR_SERVICE_MISSING);
+            return consume_enum(ctl, DINITCTL_ERROR_SERVICE_MISSING);
         case DINIT_RP_SERVICE_DESC_ERR:
-            return consume_error(ctl, DINITCTL_ERROR_SERVICE_DESC);
+            return consume_enum(ctl, DINITCTL_ERROR_SERVICE_DESC);
         case DINIT_RP_SERVICE_LOAD_ERR:
-            return consume_error(ctl, DINITCTL_ERROR_SERVICE_LOAD);
+            return consume_enum(ctl, DINITCTL_ERROR_SERVICE_LOAD);
         default:
             break;
     }
@@ -774,7 +774,7 @@ DINITCTL_API int dinitctl_get_service_name_finish(
     size_t alen, wlen;
 
     if (ctl->read_buf[0] == DINIT_RP_NAK) {
-        return consume_error(ctl, DINITCTL_ERROR);
+        return consume_enum(ctl, DINITCTL_ERROR);
     }
 
     memcpy(&nlen, &ctl->read_buf[2], sizeof(nlen));
@@ -914,7 +914,7 @@ DINITCTL_API int dinitctl_get_service_status_finish(
     int *exit_status
 ) {
     if (ctl->read_buf[0] == DINIT_RP_NAK) {
-        return consume_error(ctl, DINITCTL_ERROR);
+        return consume_enum(ctl, DINITCTL_ERROR);
     }
     fill_status(
         ctl->read_buf + 2,
@@ -996,13 +996,94 @@ DINITCTL_API int dinitctl_set_service_trigger_async(
 }
 
 DINITCTL_API int dinitctl_set_service_trigger_finish(dinitctl_t *ctl) {
-    char c = ctl->read_buf[0];
-    consume_recvbuf(ctl, 1);
-
-    if (c == DINIT_RP_NAK) {
-        return DINITCTL_ERROR;
+    if (ctl->read_buf[0] == DINIT_RP_NAK) {
+        return consume_enum(ctl, DINITCTL_ERROR);
     }
-    return DINITCTL_SUCCESS;
+    return consume_enum(ctl, DINITCTL_SUCCESS);
+}
+
+static void signal_cb(dinitctl_t *ctl, void *data) {
+    *((int *)data) = dinitctl_signal_service_finish(ctl);
+}
+
+DINITCTL_API int dinitctl_signal_service(
+    dinitctl_t *ctl, dinitctl_service_handle_t handle, int signum
+) {
+    int ret;
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    if (dinitctl_signal_service_async(
+        ctl, handle, signum, &signal_cb, &ret
+    ) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret;
+}
+
+static int signal_check(dinitctl_t *ctl) {
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_ACK:
+        case DINIT_RP_NAK:
+        case DINIT_RP_SIGNAL_NOPID:
+        case DINIT_RP_SIGNAL_BADSIG:
+        case DINIT_RP_SIGNAL_KILLERR:
+            return 0;
+    }
+    errno = EBADMSG;
+    return -1;
+}
+
+DINITCTL_API int dinitctl_signal_service_async(
+    dinitctl_t *ctl,
+    dinitctl_service_handle_t handle,
+    int signum,
+    dinitctl_async_cb cb,
+    void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, 1 + sizeof(handle) + sizeof(signum), true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = DINIT_CP_SIGNAL;
+    memcpy(&buf[1], &signum, sizeof(signum));
+    memcpy(&buf[1 + sizeof(signum)], &handle, sizeof(handle));
+
+    qop->check_cb = &signal_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_signal_service_finish(dinitctl_t *ctl) {
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_NAK:
+            return consume_enum(ctl, DINITCTL_ERROR);
+        case DINIT_RP_SIGNAL_NOPID:
+            return consume_enum(ctl, DINITCTL_ERROR_SERVICE_NO_PID);
+        case DINIT_RP_SIGNAL_BADSIG:
+            return consume_enum(ctl, DINITCTL_ERROR_SERVICE_BAD_SIGNAL);
+        case DINIT_RP_SIGNAL_KILLERR:
+            return consume_enum(ctl, DINITCTL_ERROR_SERVICE_SIGNAL_FAILED);
+        default:
+            break;
+    }
+    return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
 static void setenv_cb(dinitctl_t *ctl, void *data) {
@@ -1095,8 +1176,7 @@ DINITCTL_API int dinitctl_setenv_async(
 }
 
 DINITCTL_API int dinitctl_setenv_finish(dinitctl_t *ctl) {
-    consume_recvbuf(ctl, 1);
-    return DINITCTL_SUCCESS;
+    return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
 static void shutdown_cb(dinitctl_t *ctl, void *data) {
@@ -1166,8 +1246,7 @@ DINITCTL_API int dinitctl_shutdown_async(
 }
 
 DINITCTL_API int dinitctl_shutdown_finish(dinitctl_t *ctl) {
-    consume_recvbuf(ctl, 1);
-    return DINITCTL_SUCCESS;
+    return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
 #if 0
@@ -1204,7 +1283,5 @@ TODO:
 /* Retrieve buffered output */
 #define DINIT_CP_CATLOG 20
 
-/* Send Signal to process */
-#define DINIT_CP_SIGNAL 21
 
 #endif
