@@ -930,23 +930,24 @@ DINITCTL_API int dinitctl_get_service_status_finish(
     return DINITCTL_SUCCESS;
 }
 
-static void add_dep_cb(dinitctl_t *ctl, void *data) {
-    *((int *)data) = dinitctl_add_service_dependency_finish(ctl);
+static void add_rm_dep_cb(dinitctl_t *ctl, void *data) {
+    *((int *)data) = dinitctl_add_remove_service_dependency_finish(ctl);
 }
 
-DINITCTL_API int dinitctl_add_service_dependency(
+DINITCTL_API int dinitctl_add_remove_service_dependency(
     dinitctl_t *ctl,
     dinitctl_service_handle_t from_handle,
     dinitctl_service_handle_t to_handle,
     int type,
+    bool remove,
     bool enable
 ) {
     int ret;
     if (!bleed_queue(ctl)) {
         return -1;
     }
-    if (dinitctl_add_service_dependency_async(
-        ctl, from_handle, to_handle, type, enable, &add_dep_cb, &ret
+    if (dinitctl_add_remove_service_dependency_async(
+        ctl, from_handle, to_handle, type, remove, enable, &add_rm_dep_cb, &ret
     ) < 0) {
         return -1;
     }
@@ -956,7 +957,7 @@ DINITCTL_API int dinitctl_add_service_dependency(
     return ret;
 }
 
-static int add_dep_check(dinitctl_t *ctl) {
+static int add_rm_dep_check(dinitctl_t *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_ACK:
         case DINIT_RP_NAK:
@@ -966,11 +967,12 @@ static int add_dep_check(dinitctl_t *ctl) {
     return -1;
 }
 
-DINITCTL_API int dinitctl_add_service_dependency_async(
+DINITCTL_API int dinitctl_add_remove_service_dependency_async(
     dinitctl_t *ctl,
     dinitctl_service_handle_t from_handle,
     dinitctl_service_handle_t to_handle,
     int type,
+    bool remove,
     bool enable,
     dinitctl_async_cb cb,
     void *data
@@ -987,6 +989,10 @@ DINITCTL_API int dinitctl_add_service_dependency_async(
             errno = EINVAL;
             return -1;
     }
+    if (enable && remove) {
+        errno = EINVAL;
+        return -1;
+    }
 
     qop = new_op(ctl);
     if (!qop) {
@@ -998,12 +1004,18 @@ DINITCTL_API int dinitctl_add_service_dependency_async(
         return -1;
     }
 
-    buf[0] = enable ? DINIT_CP_ENABLESERVICE : DINIT_CP_ADD_DEP;
+    if (enable) {
+        buf[0] = DINIT_CP_ENABLESERVICE;
+    } else if (remove) {
+        buf[0] = DINIT_CP_REM_DEP;
+    } else {
+        buf[0] = DINIT_CP_ADD_DEP;
+    }
     buf[1] = (char)type;
     memcpy(&buf[2], &from_handle, sizeof(from_handle));
     memcpy(&buf[2 + sizeof(from_handle)], &to_handle, sizeof(to_handle));
 
-    qop->check_cb = &add_dep_check;
+    qop->check_cb = &add_rm_dep_check;
     qop->do_cb = cb;
     qop->do_data = data;
 
@@ -1012,7 +1024,7 @@ DINITCTL_API int dinitctl_add_service_dependency_async(
     return 0;
 }
 
-DINITCTL_API int dinitctl_add_service_dependency_finish(dinitctl_t *ctl) {
+DINITCTL_API int dinitctl_add_remove_service_dependency_finish(dinitctl_t *ctl) {
     if (ctl->read_buf[0] == DINIT_RP_NAK) {
         return consume_enum(ctl, DINITCTL_ERROR);
     }
@@ -1355,9 +1367,6 @@ TODO:
 
 /* Unload a service */
 #define DINIT_CP_UNLOADSERVICE 9
-
-/* Add/remove dependency to existing service */
-#define DINIT_CP_REM_DEP 12
 
 /* Query service load path / mechanism */
 #define DINIT_CP_QUERY_LOAD_MECH 13

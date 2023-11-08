@@ -437,7 +437,7 @@ DINITCTL_API int dinitctl_get_service_status_async(dinitctl_t *ctl, dinitctl_ser
  */
 DINITCTL_API int dinitctl_get_service_status_finish(dinitctl_t *ctl, int *state, int *target_state, pid_t *pid, int *flags, int *stop_reason, int *exec_stage, int *exit_status);
 
-/** @brief Link two services together.
+/** @brief Link two services together, or unlink them.
  *
  * Synchronous variant of dinitctl_add_service_dependency_async().
  *
@@ -445,32 +445,36 @@ DINITCTL_API int dinitctl_get_service_status_finish(dinitctl_t *ctl, int *state,
  * @param from_handle The service to gain the dependency.
  * @param to_handle The service to become the dependency.
  * @param type The dependency type.
+ * @param remove Whether to remove the dependency.
  * @param enable Whether to start the dependency.
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_add_service_dependency(dinitctl_t *ctl, dinitctl_service_handle_t from_handle, dinitctl_service_handle_t to_handle, int type, bool enable);
+DINITCTL_API int dinitctl_add_remove_service_dependency(dinitctl_t *ctl, dinitctl_service_handle_t from_handle, dinitctl_service_handle_t to_handle, int type, bool remove, bool enable);
 
-/** @brief Link two services together.
+/** @brief Link two services together, or unlink them.
  *
  * The from_handle will gain a dependency on to_handle. If enable is
  * specified, the dependency will also be started (as if `dinitctl enable`)
- * but only if the from_handle is started or starting already.
+ * but only if the from_handle is started or starting already. If remove
+ * is specified, the dependency will be removed rather than added, and
+ * enable cannot be specified.
  *
  * This API may fail with ENOMEM or with EINVAL if the given dependency
- * type is not valid.
+ * type is not valid (or if enable and remove are specified together).
  *
  * @param ctl The dinitctl.
  * @param from_handle The service to gain the dependency.
  * @param to_handle The service to become the dependency.
  * @param type The dependency type.
+ * @param remove Whether to remove the dependency.
  * @param enable Whether to start the dependency.
  * @param cb The callback.
  * @param data The data to pass to the callback.
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_add_service_dependency_async(dinitctl_t *ctl, dinitctl_service_handle_t from_handle, dinitctl_service_handle_t to_handle, int type, bool enable, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_add_remove_service_dependency_async(dinitctl_t *ctl, dinitctl_service_handle_t from_handle, dinitctl_service_handle_t to_handle, int type, bool remove, bool enable, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the dependency setup.
  *
@@ -478,13 +482,13 @@ DINITCTL_API int dinitctl_add_service_dependency_async(dinitctl_t *ctl, dinitctl
  *
  * May fail with DINITCTL_ERROR if the dependency cannot be created, for
  * instance if the dependency states contradict or if it would create a
- * loop.
+ * loop, or if it cannot be removed.
  *
  * @param ctl The dinitctl.
  *
  * @return Zero on success or a positive error code.
  */
-DINITCTL_API int dinitctl_add_service_dependency_finish(dinitctl_t *ctl);
+DINITCTL_API int dinitctl_add_remove_service_dependency_finish(dinitctl_t *ctl);
 
 /** @brief Set the trigger value of a service.
  *
