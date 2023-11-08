@@ -286,6 +286,65 @@ DINITCTL_API int dinitctl_load_service_async(dinitctl_t *ctl, char const *srv_na
  */
 DINITCTL_API int dinitctl_load_service_finish(dinitctl_t *ctl, dinitctl_service_handle_t *handle, int *state, int *target_state);
 
+/** @brief Get service name.
+ *
+ * Synchronous variant of dinitctl_get_service_name_async().
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param[out] name The name.
+ * @param[inout] buf_len Optional buffer length.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_get_service_name(dinitctl_t *ctl, dinitctl_service_handle_t handle, char **name, size_t *buf_len);
+
+/** @brief Get service name.
+ *
+ * This will get the name of the given service, which was previously
+ * found with dinitctl_load_service_async().
+ *
+ * May only fail with ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param cb The callback.
+ * @param data The data to pass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_get_service_name_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish getting the service name.
+ *
+ * Invoked from the callback to dinitctl_get_service_name_async().
+ *
+ * If buf_len contains a pointer to a valid value, name must contain a
+ * pointer to a valid buffer of that length, and the name will be written
+ * in it and potentially truncated (terminating zero will be written as
+ * well, unless the buffer is empty). The buf_len will then be updated to
+ * the actual length of the name (i.e. the minimum buffer size to store
+ * the whole name, minus terminating zero).
+ *
+ * One exception to that is if buf_len points to a value of zero, in which
+ * case this call is a pure length query, name is not touched at all, and
+ * length is written.
+ *
+ * Otherwise, a new value will be allocated with malloc() and the user is
+ * responsible for freeing it.
+ *
+ * May fail with DINITCTL_ERROR (in case of rejection by remote side)
+ * or unrecoverably (with EBADMSG or ENOMEM, the latter may indicate
+ * dinit itself running out of memory).
+ *
+ * @param ctl The dinitctl.
+ * @param[out] name The name.
+ * @param[inout] buf_len Optional buffer length.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_get_service_name_finish(dinitctl_t *ctl, char **name, size_t *buf_len);
+
 /** @brief Get service status.
  *
  * Synchronous variant of dinitctl_get_service_status_async().

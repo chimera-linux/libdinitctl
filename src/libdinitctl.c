@@ -696,6 +696,137 @@ DINITCTL_API int dinitctl_load_service_finish(
     return DINITCTL_SUCCESS;
 }
 
+struct get_service_name_ret {
+    char **out;
+    size_t *outs;
+    int code;
+};
+
+static void get_service_name_cb(dinitctl_t *ctl, void *data) {
+    struct get_service_name_ret *ret = data;
+    ret->code = dinitctl_get_service_name_finish(ctl, ret->out, ret->outs);
+}
+
+DINITCTL_API int dinitctl_get_service_name(
+    dinitctl_t *ctl,
+    dinitctl_service_handle_t handle,
+    char **name,
+    size_t *buf_len
+) {
+    struct get_service_name_ret ret;
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    ret.out = name;
+    ret.outs = buf_len;
+    if (dinitctl_get_service_name_async(
+        ctl, handle, &get_service_name_cb, &ret
+    ) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret.code;
+}
+
+static int get_service_name_check(dinitctl_t *ctl) {
+    if (ctl->read_size < 1) {
+        return 1;
+    }
+    if (ctl->read_buf[0] == DINIT_RP_SERVICENAME) {
+        uint16_t nlen;
+        if (ctl->read_size < (sizeof(nlen) + 2)) {
+            return 1;
+        }
+        memcpy(&nlen, &ctl->read_buf[2], sizeof(nlen));
+        if (ctl->read_size < (nlen + sizeof(nlen) + 2)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+DINITCTL_API int dinitctl_get_service_name_async(
+    dinitctl_t *ctl,
+    dinitctl_service_handle_t handle,
+    dinitctl_async_cb cb,
+    void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, sizeof(handle) + 2, true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = DINIT_CP_QUERYSERVICENAME;
+    buf[1] = 0;
+    memcpy(&buf[2], &handle, sizeof(handle));
+
+    qop->check_cb = &get_service_name_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_get_service_name_finish(
+    dinitctl_t *ctl, char **name, size_t *buf_len
+) {
+    uint16_t nlen;
+    size_t alen, wlen;
+
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_NAK:
+            return consume_error(ctl, DINITCTL_ERROR);
+        case DINIT_RP_OOM:
+            errno = ctl->errnov = ENOMEM;
+            return -1;
+        case DINIT_RP_SERVICENAME:
+            break;
+        default:
+            errno = ctl->errnov = EBADMSG;
+            return -1;
+    }
+
+    memcpy(&nlen, &ctl->read_buf[2], sizeof(nlen));
+    alen = nlen;
+
+    if (!buf_len) {
+        /* allocate the storage */
+        buf_len = &alen;
+        *name = malloc(alen + 1);
+        if (!*name) {
+            return -1;
+        }
+    } else if (!*buf_len) {
+        /* pure length query */
+        *buf_len = alen;
+        return DINITCTL_SUCCESS;
+    }
+
+    wlen = *buf_len - 1;
+    if (alen > wlen) {
+        wlen = alen;
+    }
+    memcpy(*name, &ctl->read_buf[2 + sizeof(nlen)], wlen);
+    /* terminate */
+    *name[wlen] = '\0';
+    *buf_len = alen;
+
+    consume_recvbuf(ctl, nlen + sizeof(nlen) + 2);
+    return DINITCTL_SUCCESS;
+}
+
 struct get_service_status_ret {
     pid_t *pid;
     int *state;
@@ -1004,9 +1135,6 @@ TODO:
 
 /* Add a waits for dependency from one service to another, and start the dependency */
 #define DINIT_CP_ENABLESERVICE 14
-
-/* Find the name of a service (from a handle) */
-#define DINIT_CP_QUERYSERVICENAME 15
 
 /* Reload a service */
 #define DINIT_CP_RELOADSERVICE 16
