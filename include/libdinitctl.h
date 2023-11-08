@@ -57,12 +57,16 @@ typedef uint32_t dinitctl_service_handle_t;
 enum dinitctl_error {
     DINITCTL_SUCCESS = 0, /**< Success. */
     DINITCTL_ERROR, /**< Error. */
+    DINITCTL_ERROR_SHUTTING_DOWN, /**< Services are shutting down. */
     DINITCTL_ERROR_SERVICE_MISSING, /**< Service could not be found. */
     DINITCTL_ERROR_SERVICE_DESC, /**< Service description error. */
     DINITCTL_ERROR_SERVICE_LOAD, /**< Service load error. */
     DINITCTL_ERROR_SERVICE_NO_PID, /**< Service has no PID. */
     DINITCTL_ERROR_SERVICE_BAD_SIGNAL, /**< Signal out of range. */
     DINITCTL_ERROR_SERVICE_SIGNAL_FAILED, /**< Signal has failed. */
+    DINITCTL_ERROR_SERVICE_PINNED, /**< Service is pinned. */
+    DINITCTL_ERROR_SERVICE_ALREADY, /**< Service already in that state. */
+    DINITCTL_ERROR_SERVICE_DEPENDENTS, /**< Dependents are blocking stop request. */
 };
 
 /** @brief Service status flags.
@@ -360,6 +364,225 @@ DINITCTL_API int dinitctl_unload_service_async(dinitctl_t *ctl, dinitctl_service
  * @return Zero on success or a positive error code.
  */
 DINITCTL_API int dinitctl_unload_service_finish(dinitctl_t *ctl);
+
+/** @brief Try starting a service.
+ *
+ * Synchronous variant of dinitctl_start_service_async().
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param pin Whether to pin the service started.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_start_service(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin);
+
+/** @brief Try starting a service.
+ *
+ * This will attempt explicit service startup. If a pin is specified,
+ * it will not be possible to stop the service (though its explicit
+ * activation mark can be removed, via stop or release). The pin is
+ * however removed upon failed startup.
+ *
+ * May only fail with ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param pin Whether to pin the service started.
+ * @param cb The callback.
+ * @param data The data to tpass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_start_service_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish the startup request.
+ *
+ * Invoked from the callback to dinitctl_start_service_async().
+ *
+ * Keep in mind that this is merely a request, and no wait until
+ * the service has reached the requested state is done. If you wish
+ * to do that, you should subscribe to service events via the dedicated
+ * callback dinitctl_set_service_event_callback() and watch for the
+ * requested state on the handle.
+ *
+ * May fail with DINITCTL_ERROR_SHUTTING_DOWN (service set is already being
+ * shut down), DINITCTL_ERROR_SERVICE_PINNED (service is pinned stopped) or
+ * maybe DINITCTL_ERROR_SERVICE_ALREADY (service is already started). May not
+ * fail unrecoverably.
+ *
+ * @param ctl The dinitctl.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_start_service_finish(dinitctl_t *ctl);
+
+/** @brief Try stopping a service.
+ *
+ * Synchronous variant of dinitctl_stop_service_async().
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param pin Whether to pin the service stopped.
+ * @param restart Whether to restart the service.
+ * @param gentle Whether to check dependents first.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_stop_service(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin, bool restart, bool gentle);
+
+/** @brief Try stopping a service.
+ *
+ * This will attempt explicit service stop. If a pin is specified,
+ * it will not be possible to start the service, hard dependents will
+ * fail to start, and explicit start command will have no effect.
+ *
+ * If restart is specified, the service will be restarted after stopping,
+ * and any specified pin value will be ignored. If gentle is specified,
+ * the stop will fail if there are running hard dependents.
+ *
+ * May only fail with ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param pin Whether to pin the service stopped.
+ * @param restart Whether to restart the service.
+ * @param gentle Whether to check dependents first.
+ * @param cb The callback.
+ * @param data The data to tpass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_stop_service_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin, bool restart, bool gentle, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish the stop request.
+ *
+ * Invoked from the callback to dinitctl_stop_service_async().
+ *
+ * Keep in mind that this is merely a request, and no wait until
+ * the service has reached the requested state is done. If you wish
+ * to do that, you should subscribe to service events via the dedicated
+ * callback dinitctl_set_service_event_callback() and watch for the
+ * requested state on the handle.
+ *
+ * May fail with DINITCTL_ERROR_SHUTTING_DOWN (service set is already being
+ * shut down), DINITCTL_ERROR_SERVICE_PINNED (service is pinned started), as
+ * well as DINITCTL_ERROR_SERVICE_DEPENDENTS if gentle stop was requested and
+ * any hard dependents are started, or maybe DINITCTL_ERROR_SERVICE_ALREADY
+ * (service is already stopped). If restart was requested, it may also
+ * fail with DINITCTL_ERROR if the restart request failed. May not fail
+ * unrecoverably.
+ *
+ * @param ctl The dinitctl.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_stop_service_finish(dinitctl_t *ctl);
+
+/** @brief Try waking a service.
+ *
+ * Synchronous variant of dinitctl_wake_service_async().
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param pin Whether to pin the service in place.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_wake_service(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin);
+
+/** @brief Try waking a service.
+ *
+ * If there are any started dependents for this service (even soft
+ * dependencies) and the service ist stopped, it will start. The
+ * service will not be marked explicitly activated and will stop
+ * as soon as dependents stop.
+ *
+ * If a pin is specified, it will be pinned started.
+ *
+ * May only fail with ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param pin Whether to pin the service started.
+ * @param cb The callback.
+ * @param data The data to tpass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_wake_service_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish the wake request.
+ *
+ * Invoked from the callback to dinitctl_wake_service_async().
+ *
+ * Keep in mind that this is merely a request, and no wait until
+ * the service has reached the requested state is done. If you wish
+ * to do that, you should subscribe to service events via the dedicated
+ * callback dinitctl_set_service_event_callback() and watch for the
+ * requested state on the handle.
+ *
+ * May fail with DINITCTL_ERROR_SHUTTING_DOWN (service set is already being
+ * shut down), DINITCTL_ERROR_SERVICE_PINNED (service is pinned stopped) or
+ * maybe DINITCTL_ERROR_SERVICE_ALREADY (service is already started). May also
+ * fail with DINITCTL_ERROR if no dependent that would wake it is found. May
+ * not fail unrecoverably.
+ *
+ * @param ctl The dinitctl.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_wake_service_finish(dinitctl_t *ctl);
+
+/** @brief Try releasing a service.
+ *
+ * Synchronous variant of dinitctl_release_service_async().
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param pin Whether to pin the service stopped.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_release_service(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin);
+
+/** @brief Try releasing a service.
+ *
+ * This will clear explicit activation mark from the service. That
+ * means if there are no started dependents, the service will stop.
+ * Otherwise, it will stop as soon as dependents stop. If a pin is
+ * specified, the service will be pinned stopped.
+ *
+ * May only fail with ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param pin Whether to pin the service stopped.
+ * @param cb The callback.
+ * @param data The data to tpass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_release_service_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish the release request.
+ *
+ * Invoked from the callback to dinitctl_release_service_async().
+ *
+ * Keep in mind that this is merely a requeest, and no wait until
+ * the service has reached the requested state is done. If you wish
+ * to do that, you should subscribe to service events via the dedicated
+ * callback dinitctl_set_service_event_callback() and watch for the
+ * requested state on the handle.
+ *
+ * May fail with DINITCTL_ERROR_SERVICE_ALREADY (service is already started).
+ * May not fail unrecoverably.
+ *
+ * @param ctl The dinitctl.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_release_service_finish(dinitctl_t *ctl);
 
 /** @brief Get service name.
  *

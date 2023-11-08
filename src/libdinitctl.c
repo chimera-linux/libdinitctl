@@ -750,6 +750,350 @@ DINITCTL_API int dinitctl_unload_service_finish(dinitctl_t *ctl) {
     return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
+static void start_cb(dinitctl_t *ctl, void *data) {
+    *((int *)data) = dinitctl_start_service_finish(ctl);
+}
+
+DINITCTL_API int dinitctl_start_service(
+    dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin
+) {
+    int ret;
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    if (dinitctl_start_service_async(
+        ctl, handle, pin, &start_cb, &ret
+    ) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret;
+}
+
+static int start_check(dinitctl_t *ctl) {
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_ACK:
+        case DINIT_RP_SHUTTINGDOWN:
+        case DINIT_RP_PINNEDSTOPPED:
+        case DINIT_RP_ALREADYSS:
+            return 0;
+    }
+    errno = EBADMSG;
+    return -1;
+}
+
+DINITCTL_API int dinitctl_start_service_async(
+    dinitctl_t *ctl,
+    dinitctl_service_handle_t handle,
+    bool pin,
+    dinitctl_async_cb cb,
+    void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, 2 + sizeof(handle), true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = DINIT_CP_STARTSERVICE;
+    buf[1] = pin ? 1 : 0;
+    memcpy(&buf[2], &handle, sizeof(handle));
+
+    qop->check_cb = &start_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_start_service_finish(dinitctl_t *ctl) {
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_SHUTTINGDOWN:
+            return consume_enum(ctl, DINITCTL_ERROR_SHUTTING_DOWN);
+        case DINIT_RP_PINNEDSTOPPED:
+            return consume_enum(ctl, DINITCTL_ERROR_SERVICE_PINNED);
+        case DINIT_RP_ALREADYSS:
+            return consume_enum(ctl, DINITCTL_ERROR_SERVICE_ALREADY);
+        default:
+            break;
+    }
+    return consume_enum(ctl, DINITCTL_SUCCESS);
+}
+
+static void stop_cb(dinitctl_t *ctl, void *data) {
+    *((int *)data) = dinitctl_stop_service_finish(ctl);
+}
+
+DINITCTL_API int dinitctl_stop_service(
+    dinitctl_t *ctl,
+    dinitctl_service_handle_t handle,
+    bool pin,
+    bool restart,
+    bool gentle
+) {
+    int ret;
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    if (dinitctl_stop_service_async(
+        ctl, handle, pin, restart, gentle, &stop_cb, &ret
+    ) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret;
+}
+
+static int stop_check(dinitctl_t *ctl) {
+    struct dinitctl_op *op = ctl->op_queue;
+    bool gentle = (bool)(uintptr_t)op->finish_data;
+
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_ACK:
+        case DINIT_RP_SHUTTINGDOWN:
+        case DINIT_RP_PINNEDSTARTED:
+        case DINIT_RP_ALREADYSS:
+        case DINIT_RP_NAK:
+            return 0;
+        case DINIT_RP_DEPENDENTS:
+            if (gentle) {
+                return 0;
+            }
+            break;
+    }
+    errno = EBADMSG;
+    return -1;
+}
+
+DINITCTL_API int dinitctl_stop_service_async(
+    dinitctl_t *ctl,
+    dinitctl_service_handle_t handle,
+    bool pin,
+    bool restart,
+    bool gentle,
+    dinitctl_async_cb cb,
+    void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, 2 + sizeof(handle), true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = DINIT_CP_STOPSERVICE;
+    buf[1] = pin ? 1 : 0;
+    if (gentle) {
+        buf[1] |= (1 << 1);
+    }
+    if (restart) {
+        buf[1] |= (1 << 2);
+    }
+    memcpy(&buf[2], &handle, sizeof(handle));
+
+    qop->check_cb = &stop_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+    qop->finish_data = (void *)(uintptr_t)gentle;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_stop_service_finish(dinitctl_t *ctl) {
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_SHUTTINGDOWN:
+            return consume_enum(ctl, DINITCTL_ERROR_SHUTTING_DOWN);
+        case DINIT_RP_PINNEDSTARTED:
+            return consume_enum(ctl, DINITCTL_ERROR_SERVICE_PINNED);
+        case DINIT_RP_ALREADYSS:
+            return consume_enum(ctl, DINITCTL_ERROR_SERVICE_ALREADY);
+        case DINIT_RP_DEPENDENTS:
+            return consume_enum(ctl, DINITCTL_ERROR_SERVICE_DEPENDENTS);
+        case DINIT_RP_NAK:
+            return consume_enum(ctl, DINITCTL_ERROR);
+        default:
+            break;
+    }
+    return consume_enum(ctl, DINITCTL_SUCCESS);
+}
+
+static void wake_cb(dinitctl_t *ctl, void *data) {
+    *((int *)data) = dinitctl_wake_service_finish(ctl);
+}
+
+DINITCTL_API int dinitctl_wake_service(
+    dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin
+) {
+    int ret;
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    if (dinitctl_wake_service_async(
+        ctl, handle, pin, &wake_cb, &ret
+    ) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret;
+}
+
+static int wake_check(dinitctl_t *ctl) {
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_ACK:
+        case DINIT_RP_SHUTTINGDOWN:
+        case DINIT_RP_PINNEDSTOPPED:
+        case DINIT_RP_ALREADYSS:
+        case DINIT_RP_NAK:
+            return 0;
+    }
+    errno = EBADMSG;
+    return -1;
+}
+
+DINITCTL_API int dinitctl_wake_service_async(
+    dinitctl_t *ctl,
+    dinitctl_service_handle_t handle,
+    bool pin,
+    dinitctl_async_cb cb,
+    void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, 2 + sizeof(handle), true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = DINIT_CP_WAKESERVICE;
+    buf[1] = pin ? 1 : 0;
+    memcpy(&buf[2], &handle, sizeof(handle));
+
+    qop->check_cb = &wake_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_wake_service_finish(dinitctl_t *ctl) {
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_SHUTTINGDOWN:
+            return consume_enum(ctl, DINITCTL_ERROR_SHUTTING_DOWN);
+        case DINIT_RP_PINNEDSTOPPED:
+            return consume_enum(ctl, DINITCTL_ERROR_SERVICE_PINNED);
+        case DINIT_RP_ALREADYSS:
+            return consume_enum(ctl, DINITCTL_ERROR_SERVICE_ALREADY);
+        case DINIT_RP_NAK:
+            return consume_enum(ctl, DINITCTL_ERROR);
+        default:
+            break;
+    }
+    return consume_enum(ctl, DINITCTL_SUCCESS);
+}
+
+static void release_cb(dinitctl_t *ctl, void *data) {
+    *((int *)data) = dinitctl_release_service_finish(ctl);
+}
+
+DINITCTL_API int dinitctl_release_service(
+    dinitctl_t *ctl, dinitctl_service_handle_t handle, bool pin
+) {
+    int ret;
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    if (dinitctl_release_service_async(
+        ctl, handle, pin, &release_cb, &ret
+    ) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret;
+}
+
+static int release_check(dinitctl_t *ctl) {
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_ACK:
+        case DINIT_RP_ALREADYSS:
+            return 0;
+    }
+    errno = EBADMSG;
+    return -1;
+}
+
+DINITCTL_API int dinitctl_release_service_async(
+    dinitctl_t *ctl,
+    dinitctl_service_handle_t handle,
+    bool pin,
+    dinitctl_async_cb cb,
+    void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, 2 + sizeof(handle), true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = DINIT_CP_RELEASESERVICE;
+    buf[1] = pin ? 1 : 0;
+    memcpy(&buf[2], &handle, sizeof(handle));
+
+    qop->check_cb = &release_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_release_service_finish(dinitctl_t *ctl) {
+    if (ctl->read_buf[0] == DINIT_RP_ALREADYSS) {
+        return consume_enum(ctl, DINITCTL_ERROR_SERVICE_ALREADY);
+    }
+    return consume_enum(ctl, DINITCTL_SUCCESS);
+}
+
 struct get_service_name_ret {
     char **out;
     size_t *outs;
@@ -1706,12 +2050,6 @@ DINITCTL_API int dinitctl_query_service_dirs_finish(
 #if 0
 
 TODO:
-
-/* Start or stop a service */
-#define DINIT_CP_STARTSERVICE 3
-#define DINIT_CP_STOPSERVICE  4
-#define DINIT_CP_WAKESERVICE 5
-#define DINIT_CP_RELEASESERVICE 6
 
 #define DINIT_CP_UNPINSERVICE 7
 
