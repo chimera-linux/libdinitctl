@@ -23,10 +23,10 @@
  * values) and a negative value means an unrecoverable error (in which case
  * errno is set and the connection should be aborted and reestablished).
  *
- * All responses may fail with ENOMEM (even if not mentioned) even if the
- * client has not run out of memory; this means dinit itself has run out of
- * memory. This is considered an unrecoverable condition, as it means the
- * connection will be closed by the remote side.
+ * Asynchronous APIs will only ever run their final callback if a recoverable
+ * condition is encountered; that means the finish APIs will only ever return
+ * success, recoverable failure, or a system failure (e.g. failed allocation)
+ * for specific APIs. Synchronous APIs also report errors of the dispatch loop.
  *
  * @copyright See COPYING.md in the project tree.
  */
@@ -229,6 +229,11 @@ DINITCTL_API int dinitctl_get_fd(dinitctl_t *ctl);
  * The function returns the number of events that have been processed. You
  * should keep calling it until the return value is zero.
  *
+ * Upon unrecoverable error, this function returns a negative value. An
+ * unrecoverable error may be the other side closing the connection,
+ * a system error like an allocation failure, or a protocol error while
+ * handling events. For those cases, errno will be set.
+ *
  * @param ctl The dinitctl.
  * @param timeout The timeout.
  * @param[out] ops_left Whether there are any events left.
@@ -288,7 +293,7 @@ DINITCTL_API int dinitctl_load_service_async(dinitctl_t *ctl, char const *srv_na
  * The recoverable error codes are DINITCTL_ERROR_SERVICE_MISSING,
  * DINITCTL_ERROR_SERVICE_DESC, and DINITCTL_ERROR_SERVICE_LOAD.
  *
- * Unrecoverable errnos are EBADMSG (protocol error).
+ * No unrecoverable errors are possible.
  *
  * @param ctl The dinitctl.
  * @param[out] handle The service handle to store.
@@ -346,8 +351,8 @@ DINITCTL_API int dinitctl_get_service_name_async(dinitctl_t *ctl, dinitctl_servi
  * Otherwise, a new value will be allocated with malloc() and the user is
  * responsible for freeing it.
  *
- * May fail with DINITCTL_ERROR (in case of rejection by remote side)
- * or unrecoverably (with EBADMSG or general conditions).
+ * May fail with DINITCTL_ERROR (in case of rejection by remote side).
+ * No unrecoverable errors are possible.
  *
  * @param ctl The dinitctl.
  * @param[out] name The name.
@@ -406,8 +411,8 @@ DINITCTL_API int dinitctl_get_service_status_async(dinitctl_t *ctl, dinitctl_ser
  * which case exit_status will be an errno, otherwise it will be
  * the exit status code for stopped services whose process failed.
  *
- * May fail with DINITCTL_ERROR (in case of rejection by remote side)
- * or unrecoverably (with EBADMSG or general conditions).
+ * May fail with DINITCTL_ERROR (in case of rejection by remote side).
+ * No unrecoverable errors are possible.
  *
  * @param ctl The dinitctl.
  * @param[out] state The service state.
@@ -455,8 +460,8 @@ DINITCTL_API int dinitctl_set_service_trigger_async(dinitctl_t *ctl, dinitctl_se
  *
  * Invoked from the callback to dinitctl_set_service_trigger_async().
  *
- * May fail with DINITCTL_ERROR recoverably, or with EBADMSG (protocol error)
- * unrecoverably.
+ * May fail with DINITCTL_ERROR recoverably. No unrecoverable errors
+ * are possible.
  *
  * @param ctl The dinitctl.
  *
@@ -498,8 +503,8 @@ DINITCTL_API int dinitctl_setenv_async(dinitctl_t *ctl, char const *env_var, din
  *
  * Invoked from the callback to dinitctl_setenv_async().
  *
- * May fail with DINITCTL_ERROR recoverably, or with EBADMSG (protocol error)
- * unrecoverably.
+ * May fail with DINITCTL_ERROR recoverably. No unrecoverable errors
+ * are possible.
  *
  * @param ctl The dinitctl.
  *
@@ -539,8 +544,8 @@ DINITCTL_API int dinitctl_shutdown_async(dinitctl_t *ctl, int type, dinitctl_asy
  *
  * Invoked from the callback to dinitctl_shutdown_async().
  *
- * May fail with DINITCTL_ERROR recoverably, or with EBADMSG (protocol error)
- * unrecoverably.
+ * May fail with DINITCTL_ERROR recoverably. No unrecoverable errors
+ * are possible.
  *
  * @param ctl The dinitctl.
  *

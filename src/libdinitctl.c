@@ -153,27 +153,20 @@ static void fill_status(
 }
 
 static int event_check(dinitctl_t *ctl) {
-    if (ctl->read_size < 1) {
-        return 1;
-    }
     if (ctl->read_buf[0] == DINIT_IP_SERVICEEVENT) {
-        if (ctl->read_size < 1) {
-            return 1;
-        }
         char psz = ctl->read_buf[1];
         if (ctl->read_size < (size_t)psz) {
             return 1;
         }
+    } else {
+        errno = EBADMSG;
+        return -1;
     }
     return 0;
 }
 
 static void event_cb(dinitctl_t *ctl, void *data) {
     (void)data;
-    if (ctl->read_buf[0] != DINIT_IP_SERVICEEVENT) {
-        errno = ctl->errnov = EBADMSG;
-        return;
-    }
     if (ctl->sv_event_cb) {
         char *buf = &ctl->read_buf[2];
         dinitctl_service_handle_t handle;
@@ -205,11 +198,6 @@ DINITCTL_API int dinitctl_dispatch(dinitctl_t *ctl, int timeout, bool *ops_left)
     /* preliminary */
     if (ops_left) {
         *ops_left = !!ctl->op_queue;
-    }
-    /* protocol error somewhere */
-    if (ctl->errnov) {
-        errno = ctl->errnov;
-        return -1;
     }
     /* first bleed the write buffer, without blocking */
     while (ctl->write_size) {
@@ -342,10 +330,6 @@ DINITCTL_API int dinitctl_dispatch(dinitctl_t *ctl, int timeout, bool *ops_left)
         }
         /* good */
         op->do_cb(ctl, op->do_data);
-        if (ctl->errnov) {
-            errno = ctl->errnov;
-            return -1;
-        }
         ++ops;
         /* move on to next operation */
         ctl->op_queue = op->next;
@@ -412,36 +396,33 @@ DINITCTL_API dinitctl_t *dinitctl_open(char const *socket_path) {
 }
 
 static int version_check(dinitctl_t *ctl) {
-    if (ctl->read_size < 1) {
-        return 1;
-    }
+    uint16_t min_compat;
+    uint16_t cp_ver;
+
     if (ctl->read_buf[0] == DINIT_RP_CPVERSION) {
         if (ctl->read_size < (2 * sizeof(uint16_t) + 1)) {
             return 1;
         }
+    } else {
+        errno = EBADMSG;
+        return -1;
     }
-    return 0;
-}
 
-static void version_cb(dinitctl_t *ctl, void *data) {
-    int *ret = data;
-    uint16_t min_compat;
-    uint16_t cp_ver;
-
-    if (ctl->read_buf[0] != DINIT_RP_CPVERSION) {
-        errno = ctl->errnov = EBADMSG;
-        *ret = -1;
-        return;
-    }
     memcpy(&min_compat, &ctl->read_buf[1], sizeof(min_compat));
     memcpy(&cp_ver, &ctl->read_buf[1 + sizeof(min_compat)], sizeof(cp_ver));
 
     /* this library is made with protocol v2 in mind */
     if ((cp_ver < 2) || (min_compat > 2)) {
-        errno = ctl->errnov = ENOTSUP;
-        *ret = -1;
-        return;
+        errno = ENOTSUP;
+        return -1;
     }
+
+    return 0;
+}
+
+static void version_cb(dinitctl_t *ctl, void *data) {
+    int *ret = data;
+
     consume_recvbuf(ctl, 2 * sizeof(uint16_t) + 1);
 
     *ret = 0;
@@ -473,7 +454,6 @@ DINITCTL_API dinitctl_t *dinitctl_open_fd(int fd) {
         return NULL;
     }
     ctl->fd = fd;
-    ctl->errnov = 0;
     /* processing buffers */
     ctl->read_buf = malloc(CTLBUF_SIZE);
     if (!ctl->read_buf) {
@@ -592,15 +572,29 @@ DINITCTL_API int dinitctl_load_service(
 }
 
 static int load_service_check(dinitctl_t *ctl) {
-    if (ctl->read_size < 1) {
-        return 1;
+    struct dinitctl_op *op = ctl->op_queue;
+    char msg = (char)(uintptr_t)op->finish_data;
+
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_SERVICERECORD:
+            if (ctl->read_size < (sizeof(dinitctl_service_handle_t) + 3)) {
+                return 1;
+            }
+            return 0;
+        case DINIT_RP_NOSERVICE:
+            return 0;
+        case DINIT_RP_SERVICE_DESC_ERR:
+        case DINIT_RP_SERVICE_LOAD_ERR:
+            if (msg == DINIT_CP_FINDSERVICE) {
+                errno = EBADMSG;
+                return -1;
+            }
+            return 0;
+        default:
+            break;
     }
-    if (ctl->read_buf[0] == DINIT_RP_SERVICERECORD) {
-        if (ctl->read_size < (sizeof(dinitctl_service_handle_t) + 3)) {
-            return 1;
-        }
-    }
-    return 0;
+    errno = EBADMSG;
+    return -1;
 }
 
 DINITCTL_API int dinitctl_load_service_async(
@@ -652,28 +646,16 @@ DINITCTL_API int dinitctl_load_service_finish(
     int *target_state
 ) {
     char *buf;
-    struct dinitctl_op *op = ctl->op_queue;
-    char msg = (char)(uintptr_t)op->finish_data;
 
     switch (ctl->read_buf[0]) {
         case DINIT_RP_NOSERVICE:
             return consume_error(ctl, DINITCTL_ERROR_SERVICE_MISSING);
         case DINIT_RP_SERVICE_DESC_ERR:
-            if (msg == DINIT_CP_FINDSERVICE) {
-                goto default_err;
-            }
             return consume_error(ctl, DINITCTL_ERROR_SERVICE_DESC);
         case DINIT_RP_SERVICE_LOAD_ERR:
-            if (msg == DINIT_CP_FINDSERVICE) {
-                goto default_err;
-            }
             return consume_error(ctl, DINITCTL_ERROR_SERVICE_LOAD);
-        case DINIT_RP_SERVICERECORD:
-            break;
-        default_err:
         default:
-            errno = ctl->errnov = EBADMSG;
-            return -1;
+            break;
     }
 
     /* service record */
@@ -732,20 +714,25 @@ DINITCTL_API int dinitctl_get_service_name(
 }
 
 static int get_service_name_check(dinitctl_t *ctl) {
-    if (ctl->read_size < 1) {
-        return 1;
-    }
-    if (ctl->read_buf[0] == DINIT_RP_SERVICENAME) {
-        uint16_t nlen;
-        if (ctl->read_size < (sizeof(nlen) + 2)) {
-            return 1;
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_NAK:
+            return 0;
+        case DINIT_RP_SERVICENAME: {
+            uint16_t nlen;
+            if (ctl->read_size < (sizeof(nlen) + 2)) {
+                return 1;
+            }
+            memcpy(&nlen, &ctl->read_buf[2], sizeof(nlen));
+            if (ctl->read_size < (nlen + sizeof(nlen) + 2)) {
+                return 1;
+            }
+            return 0;
         }
-        memcpy(&nlen, &ctl->read_buf[2], sizeof(nlen));
-        if (ctl->read_size < (nlen + sizeof(nlen) + 2)) {
-            return 1;
-        }
+        default:
+            break;
     }
-    return 0;
+    errno = EBADMSG;
+    return -1;
 }
 
 DINITCTL_API int dinitctl_get_service_name_async(
@@ -786,14 +773,8 @@ DINITCTL_API int dinitctl_get_service_name_finish(
     uint16_t nlen;
     size_t alen, wlen;
 
-    switch (ctl->read_buf[0]) {
-        case DINIT_RP_NAK:
-            return consume_error(ctl, DINITCTL_ERROR);
-        case DINIT_RP_SERVICENAME:
-            break;
-        default:
-            errno = ctl->errnov = EBADMSG;
-            return -1;
+    if (ctl->read_buf[0] == DINIT_RP_NAK) {
+        return consume_error(ctl, DINITCTL_ERROR);
     }
 
     memcpy(&nlen, &ctl->read_buf[2], sizeof(nlen));
@@ -878,13 +859,17 @@ DINITCTL_API int dinitctl_get_service_status(
 }
 
 static int get_service_status_check(dinitctl_t *ctl) {
-    if (ctl->read_size < 1) {
-        return 1;
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_NAK:
+            return 0;
+        case DINIT_RP_SERVICESTATUS: {
+            return (ctl->read_size < status_buffer_size());
+        }
+        default:
+            break;
     }
-    if (ctl->read_buf[0] == DINIT_RP_SERVICESTATUS) {
-        return (ctl->read_size < status_buffer_size());
-    }
-    return 0;
+    errno = EBADMSG;
+    return -1;
 }
 
 DINITCTL_API int dinitctl_get_service_status_async(
@@ -928,16 +913,9 @@ DINITCTL_API int dinitctl_get_service_status_finish(
     int *exec_stage,
     int *exit_status
 ) {
-    switch (ctl->read_buf[0]) {
-        case DINIT_RP_NAK:
-            return consume_error(ctl, DINITCTL_ERROR);
-        case DINIT_RP_SERVICESTATUS:
-            break;
-        default:
-            errno = ctl->errnov = EBADMSG;
-            return -1;
+    if (ctl->read_buf[0] == DINIT_RP_NAK) {
+        return consume_error(ctl, DINITCTL_ERROR);
     }
-
     fill_status(
         ctl->read_buf + 2,
         state,
@@ -948,7 +926,6 @@ DINITCTL_API int dinitctl_get_service_status_finish(
         exec_stage,
         exit_status
     );
-
     consume_recvbuf(ctl, status_buffer_size());
     return DINITCTL_SUCCESS;
 }
@@ -976,7 +953,13 @@ DINITCTL_API int dinitctl_set_service_trigger(
 }
 
 static int trigger_check(dinitctl_t *ctl) {
-    return (ctl->read_size < 1);
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_ACK:
+        case DINIT_RP_NAK:
+            return 0;
+    }
+    errno = EBADMSG;
+    return -1;
 }
 
 DINITCTL_API int dinitctl_set_service_trigger_async(
@@ -1016,14 +999,10 @@ DINITCTL_API int dinitctl_set_service_trigger_finish(dinitctl_t *ctl) {
     char c = ctl->read_buf[0];
     consume_recvbuf(ctl, 1);
 
-    if (c == DINIT_RP_ACK) {
-        return DINITCTL_SUCCESS;
-    } else if (c == DINIT_RP_NAK) {
+    if (c == DINIT_RP_NAK) {
         return DINITCTL_ERROR;
     }
-
-    errno = ctl->errnov = EBADMSG;
-    return -1;
+    return DINITCTL_SUCCESS;
 }
 
 static void setenv_cb(dinitctl_t *ctl, void *data) {
@@ -1045,7 +1024,13 @@ DINITCTL_API int dinitctl_setenv(dinitctl_t *ctl, char const *env_var) {
 }
 
 static int setenv_check(dinitctl_t *ctl) {
-    return (ctl->read_size < 1);
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_ACK:
+        case DINIT_RP_BADREQ:
+            return 0;
+    }
+    errno = EBADMSG;
+    return -1;
 }
 
 DINITCTL_API int dinitctl_setenv_async(
@@ -1089,14 +1074,10 @@ DINITCTL_API int dinitctl_setenv_finish(dinitctl_t *ctl) {
     char c = ctl->read_buf[0];
     consume_recvbuf(ctl, 1);
 
-    if (c == DINIT_RP_ACK) {
-        return DINITCTL_SUCCESS;
-    } else if (c == DINIT_RP_BADREQ) {
+    if (c == DINIT_RP_BADREQ) {
         return DINITCTL_ERROR;
     }
-
-    errno = ctl->errnov = EBADMSG;
-    return -1;
+    return DINITCTL_SUCCESS;
 }
 
 static void shutdown_cb(dinitctl_t *ctl, void *data) {
@@ -1118,7 +1099,13 @@ DINITCTL_API int dinitctl_shutdown(dinitctl_t *ctl, int type) {
 }
 
 static int shutdown_check(dinitctl_t *ctl) {
-    return (ctl->read_size < 1);
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_ACK:
+        case DINIT_RP_BADREQ:
+            return 0;
+    }
+    errno = EBADMSG;
+    return -1;
 }
 
 DINITCTL_API int dinitctl_shutdown_async(
@@ -1164,14 +1151,10 @@ DINITCTL_API int dinitctl_shutdown_finish(dinitctl_t *ctl) {
     char c = ctl->read_buf[0];
     consume_recvbuf(ctl, 1);
 
-    if (c == DINIT_RP_ACK) {
-        return DINITCTL_SUCCESS;
-    } else if (c == DINIT_RP_BADREQ) {
+    if (c == DINIT_RP_BADREQ) {
         return DINITCTL_ERROR;
     }
-
-    errno = ctl->errnov = EBADMSG;
-    return -1;
+    return DINITCTL_SUCCESS;
 }
 
 #if 0

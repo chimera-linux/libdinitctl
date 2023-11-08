@@ -31,7 +31,6 @@ struct dinitctl_t {
     size_t write_cap;
     /* file descriptor of the dinitctl connection */
     int fd;
-    int errnov;
 };
 
 #endif
