@@ -136,6 +136,11 @@ enum dinitctl_shutdown_type {
     DINITCTL_SHUTDOWN_REBOOT, /**< Reboot system. */
 };
 
+/** @brief Log buffer flags. */
+enum dinitctl_log_buffer_flag {
+    DINITCTL_LOG_BUFFER_CLEAR = 1 << 0, /** Clear the log buffer. */
+};
+
 /** @brief The async callback.
  *
  * Every async API consists of 3 calls. One is the primary invocation and
@@ -403,8 +408,8 @@ DINITCTL_API int dinitctl_get_service_name_async(dinitctl_t *ctl, dinitctl_servi
  * Otherwise, a new value will be allocated with malloc() and the user is
  * responsible for freeing it.
  *
- * May fail with DINITCTL_ERROR (in case of rejection by remote side).
- * No unrecoverable errors are possible.
+ * May fail with DINITCTL_ERROR (in case of rejection by remote side) or
+ * with ENOMEM if the name needs allocation and it fails.
  *
  * @param ctl The dinitctl.
  * @param[out] name The name.
@@ -413,6 +418,71 @@ DINITCTL_API int dinitctl_get_service_name_async(dinitctl_t *ctl, dinitctl_servi
  * @return Zero on success or a positive error code.
  */
 DINITCTL_API int dinitctl_get_service_name_finish(dinitctl_t *ctl, char **name, size_t *buf_len);
+
+/** @brief Get service log buffer.
+ *
+ * Synchronous variant of dinitctl_get_service_log_async().
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param flags The flags.
+ * @param[out] log The log buffer.
+ * @param[inout] buf_len Optional buffer length.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_get_service_log(dinitctl_t *ctl, dinitctl_service_handle_t handle, int flags, char **log, size_t *buf_len);
+
+/** @brief Get service log buffer.
+ *
+ * This will get the log buffer of the given service, which was previously
+ * found with dinitctl_load_service_async(). The service log type must be
+ * set to buffer, or the retrieval will fail.
+ *
+ * The only supported flag right now is DINITCTL_LOG_BUFFER_CLEAR, which
+ * will clear the log after retrieving it. You can pass 0 for flags if
+ * you don't want that.
+ *
+ * May only fail with ENOMEM or with EINVAL if the flags are invalid.
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param flags The flags.
+ * @param cb The callback.
+ * @param data The data to pass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_get_service_log_async(dinitctl_t *ctl, dinitctl_service_handle_t handle, int flags, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish getting the service log buffer.
+ *
+ * Invoked from the callback to dinitctl_get_service_log_async().
+ *
+ * If buf_len contains a pointer to a valid value, log must contain a
+ * pointer to a valid buffer of that length, and the log will be written
+ * in it and potentially truncated (terminating zero will be written as
+ * well, unless the buffer is empty). The buf_len will then be updated to
+ * the actual length of the log (i.e. the minimum buffer size to store
+ * the whole log, minus terminating zero).
+ *
+ * One exception to that is if buf_len points to a value of zero, in which
+ * case this call is a pure length query, log is not touched at all, and
+ * length is written.
+ *
+ * Otherwise, a new value will be allocated with malloc() and the user is
+ * responsible for freeing it.
+ *
+ * May fail with DINITCTL_ERROR (in case of rejection by remote side) or
+ * with ENOMEM if the log needs allocation and it fails.
+ *
+ * @param ctl The dinitctl.
+ * @param[out] log The log buffer.
+ * @param[inout] buf_len Optional buffer length.
+ *
+ * @return Zero on success or a positive error code.
+ */
+DINITCTL_API int dinitctl_get_service_log_finish(dinitctl_t *ctl, char **log, size_t *buf_len);
 
 /** @brief Get service status.
  *

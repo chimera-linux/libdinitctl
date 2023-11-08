@@ -877,6 +877,140 @@ DINITCTL_API int dinitctl_get_service_name_finish(
     return DINITCTL_SUCCESS;
 }
 
+struct get_service_log_ret {
+    char **out;
+    size_t *outs;
+    int code;
+};
+
+static void get_service_log_cb(dinitctl_t *ctl, void *data) {
+    struct get_service_log_ret *ret = data;
+    ret->code = dinitctl_get_service_log_finish(ctl, ret->out, ret->outs);
+}
+
+DINITCTL_API int dinitctl_get_service_log(
+    dinitctl_t *ctl,
+    dinitctl_service_handle_t handle,
+    int flags,
+    char **log,
+    size_t *buf_len
+) {
+    struct get_service_log_ret ret;
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    ret.out = log;
+    ret.outs = buf_len;
+    if (dinitctl_get_service_log_async(
+        ctl, handle, flags, &get_service_log_cb, &ret
+    ) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret.code;
+}
+
+static int get_service_log_check(dinitctl_t *ctl) {
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_NAK:
+            return 0;
+        case DINIT_RP_SERVICE_LOG: {
+            unsigned int nlen;
+            if (ctl->read_size < (sizeof(nlen) + 2)) {
+                return 1;
+            }
+            memcpy(&nlen, &ctl->read_buf[2], sizeof(nlen));
+            if (ctl->read_size < (nlen + sizeof(nlen) + 2)) {
+                return 1;
+            }
+            return 0;
+        }
+        default:
+            break;
+    }
+    errno = EBADMSG;
+    return -1;
+}
+
+DINITCTL_API int dinitctl_get_service_log_async(
+    dinitctl_t *ctl,
+    dinitctl_service_handle_t handle,
+    int flags,
+    dinitctl_async_cb cb,
+    void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    if (flags && (flags != DINITCTL_LOG_BUFFER_CLEAR)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, sizeof(handle) + 2, true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = DINIT_CP_CATLOG;
+    buf[1] = (char)flags;
+    memcpy(&buf[2], &handle, sizeof(handle));
+
+    qop->check_cb = &get_service_log_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_get_service_log_finish(
+    dinitctl_t *ctl, char **log, size_t *buf_len
+) {
+    unsigned int nlen;
+    size_t alen, wlen;
+
+    if (ctl->read_buf[0] == DINIT_RP_NAK) {
+        return consume_enum(ctl, DINITCTL_ERROR);
+    }
+
+    memcpy(&nlen, &ctl->read_buf[2], sizeof(nlen));
+    alen = nlen;
+
+    if (!buf_len) {
+        /* allocate the storage */
+        buf_len = &alen;
+        *log = malloc(alen + 1);
+        if (!*log) {
+            return -1;
+        }
+    } else if (!*buf_len) {
+        /* pure length query */
+        *buf_len = alen;
+        return DINITCTL_SUCCESS;
+    }
+
+    wlen = *buf_len - 1;
+    if (alen > wlen) {
+        wlen = alen;
+    }
+    memcpy(*log, &ctl->read_buf[2 + sizeof(nlen)], wlen);
+    /* terminate */
+    *log[wlen] = '\0';
+    *buf_len = alen;
+
+    consume_recvbuf(ctl, nlen + sizeof(nlen) + 2);
+    return DINITCTL_SUCCESS;
+}
+
 struct get_service_status_ret {
     pid_t *pid;
     int *state;
@@ -1438,9 +1572,6 @@ TODO:
 
 /* Query service load path / mechanism */
 #define DINIT_CP_QUERY_LOAD_MECH 13
-
-/* Retrieve buffered output */
-#define DINIT_CP_CATLOG 20
 
 
 #endif
