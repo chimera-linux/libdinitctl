@@ -1026,7 +1026,6 @@ DINITCTL_API int dinitctl_setenv(dinitctl_t *ctl, char const *env_var) {
 static int setenv_check(dinitctl_t *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_ACK:
-        case DINIT_RP_BADREQ:
             return 0;
     }
     errno = EBADMSG;
@@ -1037,29 +1036,54 @@ DINITCTL_API int dinitctl_setenv_async(
     dinitctl_t *ctl, char const *env_var, dinitctl_async_cb cb, void *data
 ) {
     char *buf;
+    char const *eq, *ev = NULL;
     struct dinitctl_op *qop;
     size_t varlen = strlen(env_var);
+    size_t tlen = varlen;
     uint16_t vlen;
 
-    if (!varlen || (varlen > 1021)) {
+    if (!varlen) {
         errno = EINVAL;
         return -1;
     }
-    vlen = (uint16_t)varlen;
+    eq = strchr(env_var, '=');
+    if (eq == env_var) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!eq) {
+        ev = getenv(env_var);
+        tlen += 1;
+        if (ev) {
+            tlen += strlen(ev);
+        }
+    }
+    if (tlen > 1021) {
+        errno = EINVAL;
+        return -1;
+    }
+    vlen = (uint16_t)tlen;
 
     qop = new_op(ctl);
     if (!qop) {
         return -1;
     }
 
-    buf = reserve_sendbuf(ctl, varlen + sizeof(uint16_t) + 1, true);
+    buf = reserve_sendbuf(ctl, tlen + sizeof(vlen) + 1, true);
     if (!buf) {
         return -1;
     }
 
     buf[0] = DINIT_CP_SETENV;
     memcpy(&buf[1], &vlen, sizeof(vlen));
-    memcpy(&buf[1 + sizeof(vlen)], env_var, vlen);
+    memcpy(&buf[1 + sizeof(vlen)], env_var, varlen);
+    if (tlen > varlen) {
+        size_t idx = 1 + sizeof(vlen) + varlen;
+        buf[idx++] = '=';
+        if (ev) {
+            memcpy(&buf[idx], ev, tlen - varlen - 1);
+        }
+    }
 
     qop->check_cb = &setenv_check;
     qop->do_cb = cb;
@@ -1071,12 +1095,7 @@ DINITCTL_API int dinitctl_setenv_async(
 }
 
 DINITCTL_API int dinitctl_setenv_finish(dinitctl_t *ctl) {
-    char c = ctl->read_buf[0];
     consume_recvbuf(ctl, 1);
-
-    if (c == DINIT_RP_BADREQ) {
-        return DINITCTL_ERROR;
-    }
     return DINITCTL_SUCCESS;
 }
 
@@ -1101,7 +1120,6 @@ DINITCTL_API int dinitctl_shutdown(dinitctl_t *ctl, int type) {
 static int shutdown_check(dinitctl_t *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_ACK:
-        case DINIT_RP_BADREQ:
             return 0;
     }
     errno = EBADMSG;
@@ -1148,12 +1166,7 @@ DINITCTL_API int dinitctl_shutdown_async(
 }
 
 DINITCTL_API int dinitctl_shutdown_finish(dinitctl_t *ctl) {
-    char c = ctl->read_buf[0];
     consume_recvbuf(ctl, 1);
-
-    if (c == DINIT_RP_BADREQ) {
-        return DINITCTL_ERROR;
-    }
     return DINITCTL_SUCCESS;
 }
 

@@ -487,8 +487,8 @@ DINITCTL_API int dinitctl_setenv(dinitctl_t *ctl, char const *env_var);
  * or just VAR (in which case the current environment's value will be
  * used).
  *
- * This API may only fail with EINVAL if the input value is too long, or
- * with ENOMEM.
+ * This API may only fail with EINVAL if the input value is too long or has
+ * an invalid format, or with ENOMEM.
  *
  * @param ctl The dinitctl.
  * @param env_var The env var to set.
@@ -503,12 +503,11 @@ DINITCTL_API int dinitctl_setenv_async(dinitctl_t *ctl, char const *env_var, din
  *
  * Invoked from the callback to dinitctl_setenv_async().
  *
- * May fail with DINITCTL_ERROR recoverably. No unrecoverable errors
- * are possible.
+ * This call may not fail.
  *
  * @param ctl The dinitctl.
  *
- * @return Zero on success or a positive or negative error code.
+ * @return Zero.
  */
 DINITCTL_API int dinitctl_setenv_finish(dinitctl_t *ctl);
 
@@ -544,12 +543,11 @@ DINITCTL_API int dinitctl_shutdown_async(dinitctl_t *ctl, int type, dinitctl_asy
  *
  * Invoked from the callback to dinitctl_shutdown_async().
  *
- * May fail with DINITCTL_ERROR recoverably. No unrecoverable errors
- * are possible.
+ * This call may not fail.
  *
  * @param ctl The dinitctl.
  *
- * @return Zero on success or a positive or negative error code.
+ * @return Zero.
  */
 DINITCTL_API int dinitctl_shutdown_finish(dinitctl_t *ctl);
 
