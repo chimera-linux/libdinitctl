@@ -136,14 +136,9 @@ static void fill_status(
 static int event_check(dinitctl *ctl) {
     if (ctl->read_buf[0] == DINIT_IP_SERVICEEVENT) {
         char psz = ctl->read_buf[1];
-        if (ctl->read_size < (size_t)psz) {
-            return 1;
-        }
-    } else {
-        errno = EBADMSG;
-        return -1;
+        return (ctl->read_size < (size_t)psz);
     }
-    return 0;
+    return -1;
 }
 
 static void event_cb(dinitctl *ctl, void *data) {
@@ -290,9 +285,13 @@ DINITCTL_API int dinitctl_dispatch(dinitctl *ctl, int timeout, bool *ops_left) {
             errno = ENOMEM;
             return -1;
         }
+        errno = 0;
         int chk = op->check_cb(ctl);
         if (chk < 0) {
             /* error */
+            if (!errno) {
+                errno = EBADMSG;
+            }
             return chk;
         }
         if (chk > 0) {
@@ -428,7 +427,6 @@ static int version_check(dinitctl *ctl) {
             return 1;
         }
     } else {
-        errno = EBADMSG;
         return -1;
     }
 
@@ -610,14 +608,12 @@ static int load_service_check(dinitctl *ctl) {
         case DINIT_RP_SERVICE_DESC_ERR:
         case DINIT_RP_SERVICE_LOAD_ERR:
             if (msg == DINIT_CP_FINDSERVICE) {
-                errno = EBADMSG;
                 return -1;
             }
             return 0;
         default:
             break;
     }
-    errno = EBADMSG;
     return -1;
 }
 
@@ -731,7 +727,6 @@ static int unload_check(dinitctl *ctl) {
         case DINIT_RP_NAK:
             return 0;
     }
-    errno = EBADMSG;
     return -1;
 }
 
@@ -804,7 +799,6 @@ static int start_check(dinitctl *ctl) {
         case DINIT_RP_ALREADYSS:
             return 0;
     }
-    errno = EBADMSG;
     return -1;
 }
 
@@ -898,7 +892,6 @@ static int stop_check(dinitctl *ctl) {
             }
             break;
     }
-    errno = EBADMSG;
     return -1;
 }
 
@@ -993,7 +986,6 @@ static int wake_check(dinitctl *ctl) {
         case DINIT_RP_NAK:
             return 0;
     }
-    errno = EBADMSG;
     return -1;
 }
 
@@ -1074,7 +1066,6 @@ static int release_check(dinitctl *ctl) {
         case DINIT_RP_ALREADYSS:
             return 0;
     }
-    errno = EBADMSG;
     return -1;
 }
 
@@ -1143,7 +1134,6 @@ static int unpin_check(dinitctl *ctl) {
         case DINIT_RP_ACK:
             return 0;
     }
-    errno = EBADMSG;
     return -1;
 }
 
@@ -1234,7 +1224,6 @@ static int get_service_name_check(dinitctl *ctl) {
         default:
             break;
     }
-    errno = EBADMSG;
     return -1;
 }
 
@@ -1363,7 +1352,6 @@ static int get_service_log_check(dinitctl *ctl) {
         default:
             break;
     }
-    errno = EBADMSG;
     return -1;
 }
 
@@ -1486,7 +1474,6 @@ static int get_service_status_check(dinitctl *ctl) {
         default:
             break;
     }
-    errno = EBADMSG;
     return -1;
 }
 
@@ -1566,7 +1553,6 @@ static int add_rm_dep_check(dinitctl *ctl) {
         case DINIT_RP_NAK:
             return 0;
     }
-    errno = EBADMSG;
     return -1;
 }
 
@@ -1662,7 +1648,6 @@ static int trigger_check(dinitctl *ctl) {
         case DINIT_RP_NAK:
             return 0;
     }
-    errno = EBADMSG;
     return -1;
 }
 
@@ -1737,7 +1722,6 @@ static int signal_check(dinitctl *ctl) {
         case DINIT_RP_SIGNAL_KILLERR:
             return 0;
     }
-    errno = EBADMSG;
     return -1;
 }
 
@@ -1828,7 +1812,6 @@ static int list_services_check(dinitctl *ctl) {
         case DINIT_RP_LISTDONE:
             return 0;
         default:
-            errno = EBADMSG;
             return -1;
     }
     /* now count the entries */
@@ -1864,7 +1847,6 @@ static int list_services_check(dinitctl *ctl) {
         rbuf += sbufs + namlen + 2;
         rsize -= sbufs + namlen + 2;
     }
-    errno = EBADMSG;
     return -1;
 }
 
@@ -2002,11 +1984,9 @@ DINITCTL_API int dinitctl_setenv(dinitctl *ctl, char const *env_var) {
 }
 
 static int setenv_check(dinitctl *ctl) {
-    switch (ctl->read_buf[0]) {
-        case DINIT_RP_ACK:
-            return 0;
+    if (ctl->read_buf[0] == DINIT_RP_ACK) {
+        return 0;
     }
-    errno = EBADMSG;
     return -1;
 }
 
@@ -2095,11 +2075,9 @@ DINITCTL_API int dinitctl_shutdown(dinitctl *ctl, enum dinitctl_shutdown_type ty
 }
 
 static int shutdown_check(dinitctl *ctl) {
-    switch (ctl->read_buf[0]) {
-        case DINIT_RP_ACK:
-            return 0;
+    if (ctl->read_buf[0] == DINIT_RP_ACK) {
+        return 0;
     }
-    errno = EBADMSG;
     return -1;
 }
 
@@ -2190,7 +2168,6 @@ static int dirs_check(dinitctl *ctl) {
             return (ctl->read_size < psize);
         }
     }
-    errno = EBADMSG;
     return -1;
 }
 
