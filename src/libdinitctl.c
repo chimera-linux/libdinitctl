@@ -1104,6 +1104,81 @@ DINITCTL_API int dinitctl_setenv_finish(dinitctl_t *ctl) {
     return -1;
 }
 
+static void shutdown_cb(dinitctl_t *ctl, void *data) {
+    *((int *)data) = dinitctl_shutdown_finish(ctl);
+}
+
+DINITCTL_API int dinitctl_shutdown(dinitctl_t *ctl, int type) {
+    int ret;
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    if (dinitctl_shutdown_async(ctl, type, &shutdown_cb, &ret) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret;
+}
+
+static int shutdown_check(dinitctl_t *ctl) {
+    return (ctl->read_size < 1);
+}
+
+DINITCTL_API int dinitctl_shutdown_async(
+    dinitctl_t *ctl, int type, dinitctl_async_cb cb, void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    switch (type) {
+        case DINITCTL_SHUTDOWN_REMAIN:
+        case DINITCTL_SHUTDOWN_HALT:
+        case DINITCTL_SHUTDOWN_POWEROFF:
+        case DINITCTL_SHUTDOWN_REBOOT:
+            break;
+        default:
+            errno = EINVAL;
+            return -1;
+    }
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, 2, true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = DINIT_CP_SHUTDOWN;
+    buf[1] = (char)type;
+
+    qop->check_cb = &shutdown_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_shutdown_finish(dinitctl_t *ctl) {
+    char c = ctl->read_buf[0];
+    consume_recvbuf(ctl, 1);
+
+    if (c == DINIT_RP_ACK) {
+        return DINITCTL_SUCCESS;
+    } else if (c == DINIT_RP_BADREQ) {
+        return DINITCTL_ERROR;
+    }
+
+    errno = ctl->errnov = EBADMSG;
+    return -1;
+}
+
 #if 0
 
 TODO:
@@ -1122,10 +1197,6 @@ TODO:
 /* Unload a service */
 #define DINIT_CP_UNLOADSERVICE 9
 
-/* Shutdown */
-#define DINIT_CP_SHUTDOWN 10
- /* followed by 1-byte shutdown type */
-
 /* Add/remove dependency to existing service */
 #define DINIT_CP_ADD_DEP 11
 #define DINIT_CP_REM_DEP 12
@@ -1138,9 +1209,6 @@ TODO:
 
 /* Reload a service */
 #define DINIT_CP_RELOADSERVICE 16
-
-/* Query status of an individual service */
-#define DINIT_CP_SERVICESTATUS 18
 
 /* Retrieve buffered output */
 #define DINIT_CP_CATLOG 20

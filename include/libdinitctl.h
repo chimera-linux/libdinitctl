@@ -106,11 +106,19 @@ enum dinitctl_service_exec_stage {
 
 /** @brief Service event type. */
 enum dinitctl_service_event {
-    DINITCTL_SERVICE_EVENT_STARTED, /**< Service has started. */
+    DINITCTL_SERVICE_EVENT_STARTED = 0, /**< Service has started. */
     DINITCTL_SERVICE_EVENT_STOPPED, /**< Service has stopped. */
     DINITCTL_SERVICE_EVENT_START_FAILED, /**< Service startup has failed. */
     DINITCTL_SERVICE_EVENT_START_CANCELED, /**< Service startup has been canceled. */
     DINITCTL_SERVICE_EVENT_STOP_CANCELED, /**< Service stop has been canceled. */
+};
+
+/** @brief Shutdown type. */
+enum dinitctl_shutdown_type {
+    DINITCTL_SHUTDOWN_REMAIN = 1, /**< Continue running with no services. */
+    DINITCTL_SHUTDOWN_HALT, /**< Halt system without powering down. */
+    DINITCTL_SHUTDOWN_POWEROFF, /**< Power off system. */
+    DINITCTL_SHUTDOWN_REBOOT, /**< Reboot system. */
 };
 
 /** @brief The async callback.
@@ -495,6 +503,47 @@ DINITCTL_API int dinitctl_setenv_async(dinitctl_t *ctl, char const *env_var, din
  * @return Zero on success or a positive or negative error code.
  */
 DINITCTL_API int dinitctl_setenv_finish(dinitctl_t *ctl);
+
+/** @brief Shut down dinit and maybe system.
+ *
+ * Synchronous variant of dinitctl_shutdown_async().
+ *
+ * @param ctl The dinitctl.
+ * @param int The shutdown type.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_shutdown(dinitctl_t *ctl, int type);
+
+/** @brief Shut down dinit and maybe system.
+ *
+ * This issues a shutdown command. It may result in the system being
+ * shut down or rebooted, or it may just tell dinit to shut down all services.
+ *
+ * This API may only fail with EINVAL if the input value is invalid, or
+ * with ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param type The shutdown type.
+ * @param cb The callback.
+ * @param data The data to pass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_shutdown_async(dinitctl_t *ctl, int type, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish the shutdown command.
+ *
+ * Invoked from the callback to dinitctl_shutdown_async().
+ *
+ * May fail with DINITCTL_ERROR recoverably, or with EBADMSG (protocol error)
+ * unrecoverably.
+ *
+ * @param ctl The dinitctl.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_shutdown_finish(dinitctl_t *ctl);
 
 #ifdef __cplusplus
 }
