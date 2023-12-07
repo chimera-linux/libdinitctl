@@ -27,6 +27,94 @@
 #include "common.h"
 #include "messages.h"
 
+/* handle cache map */
+
+static dinitctl_service_handle *handle_find(dinitctl *ctl, uint32_t key) {
+    dinitctl_service_handle *hptr = ctl->hndl_map[key % HANDLE_BUCKETN];
+    while (hptr && hptr->idx != key) {
+        hptr = hptr->next;
+    }
+    return hptr;
+}
+
+static bool handle_verify(dinitctl *ctl, dinitctl_service_handle *hndl) {
+    if (!hndl || (handle_find(ctl, hndl->idx) != hndl)) {
+        errno = EINVAL;
+        return false;
+    }
+    return true;
+}
+
+/* must not already exist */
+static dinitctl_service_handle *handle_add(dinitctl *ctl, uint32_t key) {
+    dinitctl_service_handle *hptr;
+    if (!ctl->hndl_unused) {
+        /* allocate a new chunk */
+        struct dinitctl_handle_chunk *chnk = malloc(
+            sizeof(struct dinitctl_handle_chunk)
+        );
+        if (!chnk) {
+            return NULL;
+        }
+        chnk->next = ctl->hndl_chunk;
+        /* link up the free handles */
+        for (size_t i = 0; i < (HANDLE_CHUNKN - 1); ++i) {
+            chnk->data[i].next = &chnk->data[i + 1];
+        }
+        chnk->data[HANDLE_CHUNKN - 1].next = NULL;
+        ctl->hndl_unused = chnk->data;
+        ctl->hndl_chunk = chnk;
+    }
+    hptr = ctl->hndl_unused;
+    ctl->hndl_unused = hptr->next;
+    hptr->idx = key;
+    hptr->next = ctl->hndl_map[key % HANDLE_BUCKETN];
+    ctl->hndl_map[key % HANDLE_BUCKETN] = hptr;
+    return hptr;
+}
+
+static int handle_reg(dinitctl *ctl, dinitctl_service_handle **out, char *buf) {
+    uint32_t v;
+    memcpy(&v, buf, sizeof(v));
+    if (!(*out = handle_add(ctl, v))) {
+        return -1;
+    }
+    return 0;
+}
+
+static int handle_check(dinitctl *ctl, char *buf) {
+    uint32_t v;
+    memcpy(&v, buf, sizeof(v));
+    if (!handle_find(ctl, v)) {
+        return -1;
+    }
+    return 0;
+}
+
+/* assumes existence has bee verified already */
+static void handle_del(dinitctl *ctl, uint32_t key) {
+    dinitctl_service_handle *hptr = ctl->hndl_map[key % HANDLE_BUCKETN];
+    /* empty bucket */
+    if (hptr->idx == key) {
+        hptr->next = ctl->hndl_unused;
+        ctl->hndl_unused = hptr;
+        ctl->hndl_map[key % HANDLE_BUCKETN] = NULL;
+    }
+    /* otherwise find it */
+    while (hptr->next) {
+        dinitctl_service_handle *nd = hptr->next;
+        if (nd->idx == key) {
+            /* unlink internal chain */
+            hptr->next = nd->next;
+            nd->next = ctl->hndl_unused;
+            ctl->hndl_unused = nd;
+            break;
+        }
+    }
+}
+
+/* buffer management */
+
 static char *reserve_sendbuf(dinitctl *ctl, size_t len, bool inc_size) {
     char *ret;
     if (ctl->write_cap < len) {
@@ -135,7 +223,20 @@ static void fill_status(
 
 static int event_check(dinitctl *ctl) {
     if (ctl->read_buf[0] == DINIT_IP_SERVICEEVENT) {
+        size_t reqsz = status_buffer_size() + sizeof(uint32_t) + 2;
         char psz = ctl->read_buf[1];
+        /* ensure the packet will provide enough data */
+        if (psz < (int)reqsz) {
+            return -1;
+        }
+        /* wait until we've gotten the handle */
+        if (ctl->read_size < (sizeof(uint32_t) + 2)) {
+            return 1;
+        }
+        if (handle_check(ctl, &ctl->read_buf[2]) < 0) {
+            return -1;
+        }
+        /* wait for full packet */
         return (ctl->read_size < (size_t)psz);
     }
     return -1;
@@ -153,7 +254,7 @@ static void event_cb(dinitctl *ctl, void *data) {
         sv_event = *buf++;
         fill_status(buf, &sbuf);
         ctl->sv_event_cb(
-            ctl, handle, sv_event, &sbuf, ctl->sv_event_data
+            ctl, handle_find(ctl, handle), sv_event, &sbuf, ctl->sv_event_data
         );
     }
     consume_recvbuf(ctl, ctl->read_buf[1]);
@@ -433,8 +534,8 @@ static int version_check(dinitctl *ctl) {
     memcpy(&min_compat, &ctl->read_buf[1], sizeof(min_compat));
     memcpy(&cp_ver, &ctl->read_buf[1 + sizeof(min_compat)], sizeof(cp_ver));
 
-    /* this library is made with protocol v2 in mind */
-    if ((cp_ver < 2) || (min_compat > 2)) {
+    /* this library is made with protocol v4 in mind */
+    if ((cp_ver < 4) || (min_compat > 4)) {
         errno = ENOTSUP;
         return -1;
     }
@@ -491,9 +592,14 @@ DINITCTL_API dinitctl *dinitctl_open_fd(int fd) {
     ctl->read_size = ctl->write_size = 0;
     ctl->read_cap = ctl->write_cap = CTLBUF_SIZE;
     /* erase remaining fields */
+    ctl->hndl_unused = NULL;
+    ctl->hndl_chunk = NULL;
     ctl->op_queue = ctl->op_last = ctl->op_avail = NULL;
     ctl->sv_event_cb = NULL;
     ctl->sv_event_data = NULL;
+    for (size_t i = 0; i < (sizeof(ctl->hndl_map) / sizeof(void *)); ++i) {
+        ctl->hndl_map[i] = NULL;
+    }
 
      /* before readying, query version */
     qop = new_op(ctl);
@@ -554,7 +660,7 @@ DINITCTL_API void dinitctl_set_service_event_callback(
 }
 
 struct load_service_ret {
-    uint32_t *handle;
+    dinitctl_service_handle **handle;
     enum dinitctl_service_state *state;
     enum dinitctl_service_state *target_state;
     int code;
@@ -571,7 +677,7 @@ DINITCTL_API int dinitctl_load_service(
     dinitctl *ctl,
     char const *srv_name,
     bool find_only,
-    uint32_t *handle,
+    dinitctl_service_handle **handle,
     enum dinitctl_service_state *state,
     enum dinitctl_service_state *target_state
 ) {
@@ -598,6 +704,10 @@ static int load_service_check(dinitctl *ctl) {
         case DINIT_RP_SERVICERECORD:
             if (ctl->read_size < (sizeof(uint32_t) + 3)) {
                 return 1;
+            }
+            /* ensure the handle is not already present */
+            if (handle_check(ctl, &ctl->read_buf[2]) < 0) {
+                return -1;
             }
             return 0;
         case DINIT_RP_NOSERVICE:
@@ -658,7 +768,7 @@ DINITCTL_API int dinitctl_load_service_async(
 
 DINITCTL_API int dinitctl_load_service_finish(
     dinitctl *ctl,
-    uint32_t *handle,
+    dinitctl_service_handle **handle,
     enum dinitctl_service_state *state,
     enum dinitctl_service_state *target_state
 ) {
@@ -683,8 +793,12 @@ DINITCTL_API int dinitctl_load_service_finish(
     }
     ++buf;
 
-    memcpy(handle, buf, sizeof(*handle));
-    buf += sizeof(*handle);
+    if (handle_reg(ctl, handle, buf) < 0) {
+        update_recvbuf(ctl, buf + sizeof(uint32_t) + 1);
+        errno = ENOMEM;
+        return -1;
+    }
+    buf += sizeof(uint32_t);
 
     if (target_state) {
         *target_state = *buf;
@@ -701,7 +815,7 @@ static void unload_cb(dinitctl *ctl, void *data) {
 }
 
 DINITCTL_API int dinitctl_unload_service(
-    dinitctl *ctl, uint32_t handle, bool reload
+    dinitctl *ctl, dinitctl_service_handle *handle, bool reload
 ) {
     int ret;
     if (!bleed_queue(ctl)) {
@@ -729,7 +843,7 @@ static int unload_check(dinitctl *ctl) {
 
 DINITCTL_API int dinitctl_unload_service_async(
     dinitctl *ctl,
-    uint32_t handle,
+    dinitctl_service_handle *handle,
     bool reload,
     dinitctl_async_cb cb,
     void *data
@@ -737,22 +851,27 @@ DINITCTL_API int dinitctl_unload_service_async(
     char *buf;
     struct dinitctl_op *qop;
 
+    if (!handle_verify(ctl, handle)) {
+        return -1;
+    }
+
     qop = new_op(ctl);
     if (!qop) {
         return -1;
     }
 
-    buf = reserve_sendbuf(ctl, 1 + sizeof(handle), true);
+    buf = reserve_sendbuf(ctl, 1 + sizeof(handle->idx), true);
     if (!buf) {
         return -1;
     }
 
     buf[0] = reload ? DINIT_CP_RELOADSERVICE : DINIT_CP_UNLOADSERVICE;
-    memcpy(&buf[1], &handle, sizeof(handle));
+    memcpy(&buf[1], &handle->idx, sizeof(handle->idx));
 
     qop->check_cb = &unload_check;
     qop->do_cb = cb;
     qop->do_data = data;
+    qop->handle = handle;
 
     queue_op(ctl, qop);
 
@@ -763,6 +882,79 @@ DINITCTL_API int dinitctl_unload_service_finish(dinitctl *ctl) {
     if (ctl->read_buf[0] == DINIT_RP_NAK) {
         return consume_enum(ctl, DINITCTL_ERROR);
     }
+    /* unregister handle on success */
+    handle_del(ctl, ctl->op_queue->handle->idx);
+    return consume_enum(ctl, DINITCTL_SUCCESS);
+}
+
+static void close_handle_cb(dinitctl *ctl, void *data) {
+    *((int *)data) = dinitctl_close_service_handle_finish(ctl);
+}
+
+DINITCTL_API int dinitctl_close_service_handle(
+    dinitctl *ctl, dinitctl_service_handle *handle
+) {
+    int ret;
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    if (dinitctl_close_service_handle_async(
+        ctl, handle, &close_handle_cb, &ret
+    ) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret;
+}
+
+static int close_handle_check(dinitctl *ctl) {
+    if (ctl->read_buf[0] == DINIT_RP_ACK) {
+        return 0;
+    }
+    return -1;
+}
+
+DINITCTL_API int dinitctl_close_service_handle_async(
+    dinitctl *ctl,
+    dinitctl_service_handle *handle,
+    dinitctl_async_cb cb,
+    void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    if (!handle_verify(ctl, handle)) {
+        return -1;
+    }
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, 1 + sizeof(handle->idx), true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = DINIT_CP_CLOSEHANDLE;
+    memcpy(&buf[1], &handle->idx, sizeof(handle->idx));
+
+    qop->check_cb = &close_handle_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+    qop->handle = handle;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_close_service_handle_finish(dinitctl *ctl) {
+    /* unregister handle on success */
+    handle_del(ctl, ctl->op_queue->handle->idx);
     return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
@@ -771,7 +963,7 @@ static void start_cb(dinitctl *ctl, void *data) {
 }
 
 DINITCTL_API int dinitctl_start_service(
-    dinitctl *ctl, uint32_t handle, bool pin
+    dinitctl *ctl, dinitctl_service_handle *handle, bool pin
 ) {
     int ret;
     if (!bleed_queue(ctl)) {
@@ -801,7 +993,7 @@ static int start_check(dinitctl *ctl) {
 
 DINITCTL_API int dinitctl_start_service_async(
     dinitctl *ctl,
-    uint32_t handle,
+    dinitctl_service_handle *handle,
     bool pin,
     dinitctl_async_cb cb,
     void *data
@@ -809,19 +1001,23 @@ DINITCTL_API int dinitctl_start_service_async(
     char *buf;
     struct dinitctl_op *qop;
 
+    if (!handle_verify(ctl, handle)) {
+        return -1;
+    }
+
     qop = new_op(ctl);
     if (!qop) {
         return -1;
     }
 
-    buf = reserve_sendbuf(ctl, 2 + sizeof(handle), true);
+    buf = reserve_sendbuf(ctl, 2 + sizeof(handle->idx), true);
     if (!buf) {
         return -1;
     }
 
     buf[0] = DINIT_CP_STARTSERVICE;
     buf[1] = pin ? 1 : 0;
-    memcpy(&buf[2], &handle, sizeof(handle));
+    memcpy(&buf[2], &handle->idx, sizeof(handle->idx));
 
     qop->check_cb = &start_check;
     qop->do_cb = cb;
@@ -852,7 +1048,7 @@ static void stop_cb(dinitctl *ctl, void *data) {
 
 DINITCTL_API int dinitctl_stop_service(
     dinitctl *ctl,
-    uint32_t handle,
+    dinitctl_service_handle *handle,
     bool pin,
     bool restart,
     bool gentle
@@ -891,7 +1087,7 @@ static int stop_check(dinitctl *ctl) {
 
 DINITCTL_API int dinitctl_stop_service_async(
     dinitctl *ctl,
-    uint32_t handle,
+    dinitctl_service_handle *handle,
     bool pin,
     bool restart,
     bool gentle,
@@ -901,12 +1097,16 @@ DINITCTL_API int dinitctl_stop_service_async(
     char *buf;
     struct dinitctl_op *qop;
 
+    if (!handle_verify(ctl, handle)) {
+        return -1;
+    }
+
     qop = new_op(ctl);
     if (!qop) {
         return -1;
     }
 
-    buf = reserve_sendbuf(ctl, 2 + sizeof(handle), true);
+    buf = reserve_sendbuf(ctl, 2 + sizeof(handle->idx), true);
     if (!buf) {
         return -1;
     }
@@ -919,7 +1119,7 @@ DINITCTL_API int dinitctl_stop_service_async(
     if (restart) {
         buf[1] |= (1 << 2);
     }
-    memcpy(&buf[2], &handle, sizeof(handle));
+    memcpy(&buf[2], &handle->idx, sizeof(handle->idx));
 
     qop->check_cb = &stop_check;
     qop->do_cb = cb;
@@ -954,7 +1154,7 @@ static void wake_cb(dinitctl *ctl, void *data) {
 }
 
 DINITCTL_API int dinitctl_wake_service(
-    dinitctl *ctl, uint32_t handle, bool pin
+    dinitctl *ctl, dinitctl_service_handle *handle, bool pin
 ) {
     int ret;
     if (!bleed_queue(ctl)) {
@@ -985,7 +1185,7 @@ static int wake_check(dinitctl *ctl) {
 
 DINITCTL_API int dinitctl_wake_service_async(
     dinitctl *ctl,
-    uint32_t handle,
+    dinitctl_service_handle *handle,
     bool pin,
     dinitctl_async_cb cb,
     void *data
@@ -993,19 +1193,23 @@ DINITCTL_API int dinitctl_wake_service_async(
     char *buf;
     struct dinitctl_op *qop;
 
+    if (!handle_verify(ctl, handle)) {
+        return -1;
+    }
+
     qop = new_op(ctl);
     if (!qop) {
         return -1;
     }
 
-    buf = reserve_sendbuf(ctl, 2 + sizeof(handle), true);
+    buf = reserve_sendbuf(ctl, 2 + sizeof(handle->idx), true);
     if (!buf) {
         return -1;
     }
 
     buf[0] = DINIT_CP_WAKESERVICE;
     buf[1] = pin ? 1 : 0;
-    memcpy(&buf[2], &handle, sizeof(handle));
+    memcpy(&buf[2], &handle->idx, sizeof(handle->idx));
 
     qop->check_cb = &wake_check;
     qop->do_cb = cb;
@@ -1037,7 +1241,7 @@ static void release_cb(dinitctl *ctl, void *data) {
 }
 
 DINITCTL_API int dinitctl_release_service(
-    dinitctl *ctl, uint32_t handle, bool pin
+    dinitctl *ctl, dinitctl_service_handle *handle, bool pin
 ) {
     int ret;
     if (!bleed_queue(ctl)) {
@@ -1065,7 +1269,7 @@ static int release_check(dinitctl *ctl) {
 
 DINITCTL_API int dinitctl_release_service_async(
     dinitctl *ctl,
-    uint32_t handle,
+    dinitctl_service_handle *handle,
     bool pin,
     dinitctl_async_cb cb,
     void *data
@@ -1073,19 +1277,23 @@ DINITCTL_API int dinitctl_release_service_async(
     char *buf;
     struct dinitctl_op *qop;
 
+    if (!handle_verify(ctl, handle)) {
+        return -1;
+    }
+
     qop = new_op(ctl);
     if (!qop) {
         return -1;
     }
 
-    buf = reserve_sendbuf(ctl, 2 + sizeof(handle), true);
+    buf = reserve_sendbuf(ctl, 2 + sizeof(handle->idx), true);
     if (!buf) {
         return -1;
     }
 
     buf[0] = DINIT_CP_RELEASESERVICE;
     buf[1] = pin ? 1 : 0;
-    memcpy(&buf[2], &handle, sizeof(handle));
+    memcpy(&buf[2], &handle->idx, sizeof(handle->idx));
 
     qop->check_cb = &release_check;
     qop->do_cb = cb;
@@ -1108,7 +1316,7 @@ static void unpin_cb(dinitctl *ctl, void *data) {
 }
 
 DINITCTL_API int dinitctl_unpin_service(
-    dinitctl *ctl, uint32_t handle
+    dinitctl *ctl, dinitctl_service_handle *handle
 ) {
     int ret;
     if (!bleed_queue(ctl)) {
@@ -1133,25 +1341,29 @@ static int unpin_check(dinitctl *ctl) {
 
 DINITCTL_API int dinitctl_unpin_service_async(
     dinitctl *ctl,
-    uint32_t handle,
+    dinitctl_service_handle *handle,
     dinitctl_async_cb cb,
     void *data
 ) {
     char *buf;
     struct dinitctl_op *qop;
 
+    if (!handle_verify(ctl, handle)) {
+        return -1;
+    }
+
     qop = new_op(ctl);
     if (!qop) {
         return -1;
     }
 
-    buf = reserve_sendbuf(ctl, 1 + sizeof(handle), true);
+    buf = reserve_sendbuf(ctl, 1 + sizeof(handle->idx), true);
     if (!buf) {
         return -1;
     }
 
     buf[0] = DINIT_CP_UNPINSERVICE;
-    memcpy(&buf[2], &handle, sizeof(handle));
+    memcpy(&buf[2], &handle->idx, sizeof(handle->idx));
 
     qop->check_cb = &unpin_check;
     qop->do_cb = cb;
@@ -1179,7 +1391,7 @@ static void get_service_name_cb(dinitctl *ctl, void *data) {
 
 DINITCTL_API int dinitctl_get_service_name(
     dinitctl *ctl,
-    uint32_t handle,
+    dinitctl_service_handle *handle,
     char **name,
     ssize_t *buf_len
 ) {
@@ -1223,26 +1435,30 @@ static int get_service_name_check(dinitctl *ctl) {
 
 DINITCTL_API int dinitctl_get_service_name_async(
     dinitctl *ctl,
-    uint32_t handle,
+    dinitctl_service_handle *handle,
     dinitctl_async_cb cb,
     void *data
 ) {
     char *buf;
     struct dinitctl_op *qop;
 
+    if (!handle_verify(ctl, handle)) {
+        return -1;
+    }
+
     qop = new_op(ctl);
     if (!qop) {
         return -1;
     }
 
-    buf = reserve_sendbuf(ctl, sizeof(handle) + 2, true);
+    buf = reserve_sendbuf(ctl, sizeof(handle->idx) + 2, true);
     if (!buf) {
         return -1;
     }
 
     buf[0] = DINIT_CP_QUERYSERVICENAME;
     buf[1] = 0;
-    memcpy(&buf[2], &handle, sizeof(handle));
+    memcpy(&buf[2], &handle->idx, sizeof(handle->idx));
 
     qop->check_cb = &get_service_name_check;
     qop->do_cb = cb;
@@ -1309,7 +1525,7 @@ static void get_service_log_cb(dinitctl *ctl, void *data) {
 
 DINITCTL_API int dinitctl_get_service_log(
     dinitctl *ctl,
-    uint32_t handle,
+    dinitctl_service_handle *handle,
     int flags,
     char **log,
     ssize_t *buf_len
@@ -1354,7 +1570,7 @@ static int get_service_log_check(dinitctl *ctl) {
 
 DINITCTL_API int dinitctl_get_service_log_async(
     dinitctl *ctl,
-    uint32_t handle,
+    dinitctl_service_handle *handle,
     int flags,
     dinitctl_async_cb cb,
     void *data
@@ -1367,19 +1583,23 @@ DINITCTL_API int dinitctl_get_service_log_async(
         return -1;
     }
 
+    if (!handle_verify(ctl, handle)) {
+        return -1;
+    }
+
     qop = new_op(ctl);
     if (!qop) {
         return -1;
     }
 
-    buf = reserve_sendbuf(ctl, sizeof(handle) + 2, true);
+    buf = reserve_sendbuf(ctl, sizeof(handle->idx) + 2, true);
     if (!buf) {
         return -1;
     }
 
     buf[0] = DINIT_CP_CATLOG;
     buf[1] = (char)flags;
-    memcpy(&buf[2], &handle, sizeof(handle));
+    memcpy(&buf[2], &handle->idx, sizeof(handle->idx));
 
     qop->check_cb = &get_service_log_check;
     qop->do_cb = cb;
@@ -1445,7 +1665,7 @@ static void get_service_status_cb(dinitctl *ctl, void *data) {
 
 DINITCTL_API int dinitctl_get_service_status(
     dinitctl *ctl,
-    uint32_t handle,
+    dinitctl_service_handle *handle,
     dinitctl_service_status *status
 ) {
     struct get_service_status_ret ret;
@@ -1479,25 +1699,29 @@ static int get_service_status_check(dinitctl *ctl) {
 
 DINITCTL_API int dinitctl_get_service_status_async(
     dinitctl *ctl,
-    uint32_t handle,
+    dinitctl_service_handle *handle,
     dinitctl_async_cb cb,
     void *data
 ) {
     char *buf;
     struct dinitctl_op *qop;
 
+    if (!handle_verify(ctl, handle)) {
+        return -1;
+    }
+
     qop = new_op(ctl);
     if (!qop) {
         return -1;
     }
 
-    buf = reserve_sendbuf(ctl, sizeof(handle) + 1, true);
+    buf = reserve_sendbuf(ctl, sizeof(handle->idx) + 1, true);
     if (!buf) {
         return -1;
     }
 
     buf[0] = DINIT_CP_SERVICESTATUS;
-    memcpy(&buf[1], &handle, sizeof(handle));
+    memcpy(&buf[1], &handle->idx, sizeof(handle->idx));
 
     qop->check_cb = &get_service_status_check;
     qop->do_cb = cb;
@@ -1526,8 +1750,8 @@ static void add_rm_dep_cb(dinitctl *ctl, void *data) {
 
 DINITCTL_API int dinitctl_add_remove_service_dependency(
     dinitctl *ctl,
-    uint32_t from_handle,
-    uint32_t to_handle,
+    dinitctl_service_handle *from_handle,
+    dinitctl_service_handle *to_handle,
     enum dinitctl_dependency_type type,
     bool remove,
     bool enable
@@ -1558,8 +1782,8 @@ static int add_rm_dep_check(dinitctl *ctl) {
 
 DINITCTL_API int dinitctl_add_remove_service_dependency_async(
     dinitctl *ctl,
-    uint32_t from_handle,
-    uint32_t to_handle,
+    dinitctl_service_handle *from_handle,
+    dinitctl_service_handle *to_handle,
     enum dinitctl_dependency_type type,
     bool remove,
     bool enable,
@@ -1568,6 +1792,10 @@ DINITCTL_API int dinitctl_add_remove_service_dependency_async(
 ) {
     char *buf;
     struct dinitctl_op *qop;
+
+    if (!handle_verify(ctl, from_handle) || !handle_verify(ctl, to_handle)) {
+        return -1;
+    }
 
     switch (type) {
         case DINITCTL_DEPENDENCY_REGULAR:
@@ -1588,7 +1816,7 @@ DINITCTL_API int dinitctl_add_remove_service_dependency_async(
         return -1;
     }
 
-    buf = reserve_sendbuf(ctl, 2 + 2 * sizeof(from_handle), true);
+    buf = reserve_sendbuf(ctl, 2 + 2 * sizeof(from_handle->idx), true);
     if (!buf) {
         return -1;
     }
@@ -1601,8 +1829,8 @@ DINITCTL_API int dinitctl_add_remove_service_dependency_async(
         buf[0] = DINIT_CP_ADD_DEP;
     }
     buf[1] = (char)type;
-    memcpy(&buf[2], &from_handle, sizeof(from_handle));
-    memcpy(&buf[2 + sizeof(from_handle)], &to_handle, sizeof(to_handle));
+    memcpy(&buf[2], &from_handle->idx, sizeof(from_handle->idx));
+    memcpy(&buf[2 + sizeof(from_handle->idx)], &to_handle->idx, sizeof(to_handle->idx));
 
     qop->check_cb = &add_rm_dep_check;
     qop->do_cb = cb;
@@ -1625,7 +1853,7 @@ static void trigger_cb(dinitctl *ctl, void *data) {
 }
 
 DINITCTL_API int dinitctl_set_service_trigger(
-    dinitctl *ctl, uint32_t handle, bool trigger
+    dinitctl *ctl, dinitctl_service_handle *handle, bool trigger
 ) {
     int ret;
     if (!bleed_queue(ctl)) {
@@ -1653,7 +1881,7 @@ static int trigger_check(dinitctl *ctl) {
 
 DINITCTL_API int dinitctl_set_service_trigger_async(
     dinitctl *ctl,
-    uint32_t handle,
+    dinitctl_service_handle *handle,
     bool trigger,
     dinitctl_async_cb cb,
     void *data
@@ -1661,19 +1889,23 @@ DINITCTL_API int dinitctl_set_service_trigger_async(
     char *buf;
     struct dinitctl_op *qop;
 
+    if (!handle_verify(ctl, handle)) {
+        return -1;
+    }
+
     qop = new_op(ctl);
     if (!qop) {
         return -1;
     }
 
-    buf = reserve_sendbuf(ctl, 2 + sizeof(handle), true);
+    buf = reserve_sendbuf(ctl, 2 + sizeof(handle->idx), true);
     if (!buf) {
         return -1;
     }
 
     buf[0] = DINIT_CP_SETTRIGGER;
-    memcpy(&buf[1], &handle, sizeof(handle));
-    buf[1 + sizeof(handle)] = (char)trigger;
+    memcpy(&buf[1], &handle->idx, sizeof(handle->idx));
+    buf[1 + sizeof(handle->idx)] = (char)trigger;
 
     qop->check_cb = &trigger_check;
     qop->do_cb = cb;
@@ -1696,7 +1928,7 @@ static void signal_cb(dinitctl *ctl, void *data) {
 }
 
 DINITCTL_API int dinitctl_signal_service(
-    dinitctl *ctl, uint32_t handle, int signum
+    dinitctl *ctl, dinitctl_service_handle *handle, int signum
 ) {
     int ret;
     if (!bleed_queue(ctl)) {
@@ -1727,7 +1959,7 @@ static int signal_check(dinitctl *ctl) {
 
 DINITCTL_API int dinitctl_signal_service_async(
     dinitctl *ctl,
-    uint32_t handle,
+    dinitctl_service_handle *handle,
     int signum,
     dinitctl_async_cb cb,
     void *data
@@ -1735,19 +1967,23 @@ DINITCTL_API int dinitctl_signal_service_async(
     char *buf;
     struct dinitctl_op *qop;
 
+    if (!handle_verify(ctl, handle)) {
+        return -1;
+    }
+
     qop = new_op(ctl);
     if (!qop) {
         return -1;
     }
 
-    buf = reserve_sendbuf(ctl, 1 + sizeof(handle) + sizeof(signum), true);
+    buf = reserve_sendbuf(ctl, 1 + sizeof(handle->idx) + sizeof(signum), true);
     if (!buf) {
         return -1;
     }
 
     buf[0] = DINIT_CP_SIGNAL;
     memcpy(&buf[1], &signum, sizeof(signum));
-    memcpy(&buf[1 + sizeof(signum)], &handle, sizeof(handle));
+    memcpy(&buf[1 + sizeof(signum)], &handle->idx, sizeof(handle->idx));
 
     qop->check_cb = &signal_check;
     qop->do_cb = cb;

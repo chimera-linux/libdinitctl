@@ -54,6 +54,25 @@ extern "C" {
  */
 typedef struct dinitctl dinitctl;
 
+/** @brief The dinitctl service handle.
+ *
+ * A service handle represents a connection's reference to a loaded
+ * service. The handles are cached at the client side and always in
+ * sync with the server. A valid handle existing in any connection
+ * will prevent a service from being unloaded or reloaded.
+ *
+ * Ideally, a handle will have a short lifetime, so that it does not
+ * unnecessarily hold services in place. A handle is created by loading
+ * or finding the service, after which it can be used in subsequent
+ * calls. Once done, it should be closed.
+ *
+ * APIs that take a handle as an input will fail with EINVAL if a bad
+ * handle is given.
+ *
+ * Unloading or reloading a service will close the handle upon success.
+ */
+typedef struct dinitctl_service_handle dinitctl_service_handle;
+
 /** @brief General return values.
  *
  * These positive values may be returned by int-returning APIs.
@@ -207,7 +226,7 @@ typedef void (*dinitctl_async_cb)(dinitctl *ctl, void *data);
  */
 typedef void (*dinitctl_service_event_cb)(
     dinitctl *ctl,
-    uint32_t handle,
+    dinitctl_service_handle *handle,
     enum dinitctl_service_event service_event,
     dinitctl_service_status const *status,
     void *data
@@ -348,7 +367,7 @@ DINITCTL_API void dinitctl_set_service_event_callback(dinitctl *ctl, dinitctl_se
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_load_service(dinitctl *ctl, char const *srv_name, bool find_only, uint32_t *handle, enum dinitctl_service_state *state, enum dinitctl_service_state *target_state);
+DINITCTL_API int dinitctl_load_service(dinitctl *ctl, char const *srv_name, bool find_only, dinitctl_service_handle **handle, enum dinitctl_service_state *state, enum dinitctl_service_state *target_state);
 
 /** @brief Find or load a service by name.
  *
@@ -378,7 +397,7 @@ DINITCTL_API int dinitctl_load_service_async(dinitctl *ctl, char const *srv_name
  * The recoverable error codes are DINITCTL_ERROR_SERVICE_MISSING,
  * DINITCTL_ERROR_SERVICE_DESC, and DINITCTL_ERROR_SERVICE_LOAD.
  *
- * No unrecoverable errors are possible.
+ * May possibly fail with ENOMEM unrecoverably.
  *
  * @param ctl The dinitctl.
  * @param[out] handle The service handle to store.
@@ -387,7 +406,7 @@ DINITCTL_API int dinitctl_load_service_async(dinitctl *ctl, char const *srv_name
  *
  * @return 0 on success or one of the error codes.
  */
-DINITCTL_API int dinitctl_load_service_finish(dinitctl *ctl, uint32_t *handle, enum dinitctl_service_state *state, enum dinitctl_service_state *target_state);
+DINITCTL_API int dinitctl_load_service_finish(dinitctl *ctl, dinitctl_service_handle **handle, enum dinitctl_service_state *state, enum dinitctl_service_state *target_state);
 
 /** @brief Unload or reload a service.
  *
@@ -399,14 +418,14 @@ DINITCTL_API int dinitctl_load_service_finish(dinitctl *ctl, uint32_t *handle, e
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_unload_service(dinitctl *ctl, uint32_t handle, bool reload);
+DINITCTL_API int dinitctl_unload_service(dinitctl *ctl, dinitctl_service_handle *handle, bool reload);
 
 /** @brief Unload or reload a service.
  *
  * This will unload or reload the given service, which was previously
  * found with dinitctl_load_service_async().
  *
- * May only fail with ENOMEM.
+ * May fail with EINVAL or with ENOMEM.
  *
  * @param ctl The dinitctl.
  * @param handle The service handle.
@@ -416,7 +435,7 @@ DINITCTL_API int dinitctl_unload_service(dinitctl *ctl, uint32_t handle, bool re
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_unload_service_async(dinitctl *ctl, uint32_t handle, bool reload, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_unload_service_async(dinitctl *ctl, dinitctl_service_handle *handle, bool reload, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish unloading or reloading the service name.
  *
@@ -425,11 +444,55 @@ DINITCTL_API int dinitctl_unload_service_async(dinitctl *ctl, uint32_t handle, b
  * May fail with DINITCTL_ERROR (in case of rejection by remote side).
  * No unrecoverable errors are possible.
  *
+ * A successful return means the original given handle was closed and
+ * must not be used again.
+ *
  * @param ctl The dinitctl.
  *
  * @return Zero on success or a positive error code.
  */
 DINITCTL_API int dinitctl_unload_service_finish(dinitctl *ctl);
+
+/** @brief Close a service handle.
+ *
+ * Synchronous variant of dinitctl_close_service_handle_async().
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_close_service_handle(dinitctl *ctl, dinitctl_service_handle *handle);
+
+/** @brief Close a service handle.
+ *
+ * Start closing the given service handle. The handle must be known
+ * to the client, i.e. it must represent a service that was loaded
+ * or found and not unloaded.
+ *
+ * May fail with EINVAL (if the handle is not known to the client)
+ * or with ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param cb The callback.
+ * @param data The data to pass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_close_service_handle_async(dinitctl *ctl, dinitctl_service_handle *handle, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish closing the service handle.
+ *
+ * Invoked from the callback to dinitctl_unload_service_async().
+ *
+ * This call may not fail.
+ *
+ * @param ctl The dinitctl.
+ *
+ * @return Zero on success.
+ */
+DINITCTL_API int dinitctl_close_service_handle_finish(dinitctl *ctl);
 
 /** @brief Try starting a service.
  *
@@ -441,7 +504,7 @@ DINITCTL_API int dinitctl_unload_service_finish(dinitctl *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_start_service(dinitctl *ctl, uint32_t handle, bool pin);
+DINITCTL_API int dinitctl_start_service(dinitctl *ctl, dinitctl_service_handle *handle, bool pin);
 
 /** @brief Try starting a service.
  *
@@ -450,7 +513,7 @@ DINITCTL_API int dinitctl_start_service(dinitctl *ctl, uint32_t handle, bool pin
  * activation mark can be removed, via stop or release). The pin is
  * however removed upon failed startup.
  *
- * May only fail with ENOMEM.
+ * May fail with EINVAL or ENOMEM.
  *
  * @param ctl The dinitctl.
  * @param handle The service handle.
@@ -460,7 +523,7 @@ DINITCTL_API int dinitctl_start_service(dinitctl *ctl, uint32_t handle, bool pin
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_start_service_async(dinitctl *ctl, uint32_t handle, bool pin, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_start_service_async(dinitctl *ctl, dinitctl_service_handle *handle, bool pin, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the startup request.
  *
@@ -495,7 +558,7 @@ DINITCTL_API int dinitctl_start_service_finish(dinitctl *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_stop_service(dinitctl *ctl, uint32_t handle, bool pin, bool restart, bool gentle);
+DINITCTL_API int dinitctl_stop_service(dinitctl *ctl, dinitctl_service_handle *handle, bool pin, bool restart, bool gentle);
 
 /** @brief Try stopping a service.
  *
@@ -507,7 +570,7 @@ DINITCTL_API int dinitctl_stop_service(dinitctl *ctl, uint32_t handle, bool pin,
  * and any specified pin value will be ignored. If gentle is specified,
  * the stop will fail if there are running hard dependents.
  *
- * May only fail with ENOMEM.
+ * May fail with EINVAL or with ENOMEM.
  *
  * @param ctl The dinitctl.
  * @param handle The service handle.
@@ -519,7 +582,7 @@ DINITCTL_API int dinitctl_stop_service(dinitctl *ctl, uint32_t handle, bool pin,
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_stop_service_async(dinitctl *ctl, uint32_t handle, bool pin, bool restart, bool gentle, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_stop_service_async(dinitctl *ctl, dinitctl_service_handle *handle, bool pin, bool restart, bool gentle, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the stop request.
  *
@@ -555,7 +618,7 @@ DINITCTL_API int dinitctl_stop_service_finish(dinitctl *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_wake_service(dinitctl *ctl, uint32_t handle, bool pin);
+DINITCTL_API int dinitctl_wake_service(dinitctl *ctl, dinitctl_service_handle *handle, bool pin);
 
 /** @brief Try waking a service.
  *
@@ -566,7 +629,7 @@ DINITCTL_API int dinitctl_wake_service(dinitctl *ctl, uint32_t handle, bool pin)
  *
  * If a pin is specified, it will be pinned started.
  *
- * May only fail with ENOMEM.
+ * May fail with EINVAL or ENOMEM.
  *
  * @param ctl The dinitctl.
  * @param handle The service handle.
@@ -576,7 +639,7 @@ DINITCTL_API int dinitctl_wake_service(dinitctl *ctl, uint32_t handle, bool pin)
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_wake_service_async(dinitctl *ctl, uint32_t handle, bool pin, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_wake_service_async(dinitctl *ctl, dinitctl_service_handle *handle, bool pin, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the wake request.
  *
@@ -610,7 +673,7 @@ DINITCTL_API int dinitctl_wake_service_finish(dinitctl *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_release_service(dinitctl *ctl, uint32_t handle, bool pin);
+DINITCTL_API int dinitctl_release_service(dinitctl *ctl, dinitctl_service_handle *handle, bool pin);
 
 /** @brief Try releasing a service.
  *
@@ -619,7 +682,7 @@ DINITCTL_API int dinitctl_release_service(dinitctl *ctl, uint32_t handle, bool p
  * Otherwise, it will stop as soon as dependents stop. If a pin is
  * specified, the service will be pinned stopped.
  *
- * May only fail with ENOMEM.
+ * May fail with EINVAL or ENOMEM.
  *
  * @param ctl The dinitctl.
  * @param handle The service handle.
@@ -629,7 +692,7 @@ DINITCTL_API int dinitctl_release_service(dinitctl *ctl, uint32_t handle, bool p
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_release_service_async(dinitctl *ctl, uint32_t handle, bool pin, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_release_service_async(dinitctl *ctl, dinitctl_service_handle *handle, bool pin, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the release request.
  *
@@ -659,7 +722,7 @@ DINITCTL_API int dinitctl_release_service_finish(dinitctl *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_unpin_service(dinitctl *ctl, uint32_t handle);
+DINITCTL_API int dinitctl_unpin_service(dinitctl *ctl, dinitctl_service_handle *handle);
 
 /** @brief Remove start/stop service pins.
  *
@@ -678,7 +741,7 @@ DINITCTL_API int dinitctl_unpin_service(dinitctl *ctl, uint32_t handle);
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_unpin_service_async(dinitctl *ctl, uint32_t handle, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_unpin_service_async(dinitctl *ctl, dinitctl_service_handle *handle, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the unpin.
  *
@@ -704,14 +767,14 @@ DINITCTL_API int dinitctl_unpin_service_finish(dinitctl *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_get_service_name(dinitctl *ctl, uint32_t handle, char **name, ssize_t *buf_len);
+DINITCTL_API int dinitctl_get_service_name(dinitctl *ctl, dinitctl_service_handle *handle, char **name, ssize_t *buf_len);
 
 /** @brief Get service name.
  *
  * This will get the name of the given service, which was previously
  * found with dinitctl_load_service_async().
  *
- * May only fail with ENOMEM.
+ * May fail with EINVAL or ENOMEM.
  *
  * @param ctl The dinitctl.
  * @param handle The service handle.
@@ -720,7 +783,7 @@ DINITCTL_API int dinitctl_get_service_name(dinitctl *ctl, uint32_t handle, char 
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_get_service_name_async(dinitctl *ctl, uint32_t handle, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_get_service_name_async(dinitctl *ctl, dinitctl_service_handle *handle, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish getting the service name.
  *
@@ -763,7 +826,7 @@ DINITCTL_API int dinitctl_get_service_name_finish(dinitctl *ctl, char **name, ss
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_get_service_log(dinitctl *ctl, uint32_t handle, int flags, char **log, ssize_t *buf_len);
+DINITCTL_API int dinitctl_get_service_log(dinitctl *ctl, dinitctl_service_handle *handle, int flags, char **log, ssize_t *buf_len);
 
 /** @brief Get service log buffer.
  *
@@ -775,7 +838,7 @@ DINITCTL_API int dinitctl_get_service_log(dinitctl *ctl, uint32_t handle, int fl
  * will clear the log after retrieving it. You can pass 0 for flags if
  * you don't want that.
  *
- * May only fail with ENOMEM or with EINVAL if the flags are invalid.
+ * May only fail with ENOMEM or with EINVAL if the flags or handle are invalid.
  *
  * @param ctl The dinitctl.
  * @param handle The service handle.
@@ -785,7 +848,7 @@ DINITCTL_API int dinitctl_get_service_log(dinitctl *ctl, uint32_t handle, int fl
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_get_service_log_async(dinitctl *ctl, uint32_t handle, int flags, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_get_service_log_async(dinitctl *ctl, dinitctl_service_handle *handle, int flags, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish getting the service log buffer.
  *
@@ -826,14 +889,14 @@ DINITCTL_API int dinitctl_get_service_log_finish(dinitctl *ctl, char **log, ssiz
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_get_service_status(dinitctl *ctl, uint32_t handle, dinitctl_service_status *status);
+DINITCTL_API int dinitctl_get_service_status(dinitctl *ctl, dinitctl_service_handle *handle, dinitctl_service_status *status);
 
 /** @brief Get service status.
  *
  * This will get the status of the given service, which was previously
  * found with dinitctl_load_service_async().
  *
- * May only fail with ENOMEM.
+ * May fail with EINVAL or ENOMEM.
  *
  * @param ctl The dinitctl.
  * @param handle The service handle.
@@ -842,7 +905,7 @@ DINITCTL_API int dinitctl_get_service_status(dinitctl *ctl, uint32_t handle, din
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_get_service_status_async(dinitctl *ctl, uint32_t handle, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_get_service_status_async(dinitctl *ctl, dinitctl_service_handle *handle, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish getting the service status.
  *
@@ -873,7 +936,7 @@ DINITCTL_API int dinitctl_get_service_status_finish(dinitctl *ctl, dinitctl_serv
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_add_remove_service_dependency(dinitctl *ctl, uint32_t from_handle, uint32_t to_handle, enum dinitctl_dependency_type type, bool remove, bool enable);
+DINITCTL_API int dinitctl_add_remove_service_dependency(dinitctl *ctl, dinitctl_service_handle *from_handle, dinitctl_service_handle *to_handle, enum dinitctl_dependency_type type, bool remove, bool enable);
 
 /** @brief Link two services together, or unlink them.
  *
@@ -884,7 +947,8 @@ DINITCTL_API int dinitctl_add_remove_service_dependency(dinitctl *ctl, uint32_t 
  * enable cannot be specified.
  *
  * This API may fail with ENOMEM or with EINVAL if the given dependency
- * type is not valid (or if enable and remove are specified together).
+ * type is not valid or the handles are not valid (or if enable and remove
+ * are specified together).
  *
  * @param ctl The dinitctl.
  * @param from_handle The service to gain the dependency.
@@ -897,7 +961,7 @@ DINITCTL_API int dinitctl_add_remove_service_dependency(dinitctl *ctl, uint32_t 
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_add_remove_service_dependency_async(dinitctl *ctl, uint32_t from_handle, uint32_t to_handle, enum dinitctl_dependency_type type, bool remove, bool enable, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_add_remove_service_dependency_async(dinitctl *ctl, dinitctl_service_handle *from_handle, dinitctl_service_handle *to_handle, enum dinitctl_dependency_type type, bool remove, bool enable, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the dependency setup.
  *
@@ -923,14 +987,14 @@ DINITCTL_API int dinitctl_add_remove_service_dependency_finish(dinitctl *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_set_service_trigger(dinitctl *ctl, uint32_t handle, bool trigger);
+DINITCTL_API int dinitctl_set_service_trigger(dinitctl *ctl, dinitctl_service_handle *handle, bool trigger);
 
 /** @brief Set the trigger value of a service.
  *
  * This sets or unsets whether a service is triggered, depending on the
  * given value.
  *
- * This API may only fail with ENOMEM.
+ * This API may fail with EINVAL or ENOMEM.
  *
  * @param ctl The dinitctl.
  * @param handle The service handle.
@@ -940,7 +1004,7 @@ DINITCTL_API int dinitctl_set_service_trigger(dinitctl *ctl, uint32_t handle, bo
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_set_service_trigger_async(dinitctl *ctl, uint32_t handle, bool trigger, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_set_service_trigger_async(dinitctl *ctl, dinitctl_service_handle *handle, bool trigger, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish setting trigger value.
  *
@@ -965,13 +1029,13 @@ DINITCTL_API int dinitctl_set_service_trigger_finish(dinitctl *ctl);
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_signal_service(dinitctl *ctl, uint32_t handle, int signum);
+DINITCTL_API int dinitctl_signal_service(dinitctl *ctl, dinitctl_service_handle *handle, int signum);
 
 /** @brief Send a service a signal.
  *
  * This sends the given signal to the given service.
  *
- * This API may only fail with ENOMEM.
+ * This API may fail with EINVAL or ENOMEM.
  *
  * @param ctl The dinitctl.
  * @param handle The service handle.
@@ -981,7 +1045,7 @@ DINITCTL_API int dinitctl_signal_service(dinitctl *ctl, uint32_t handle, int sig
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_signal_service_async(dinitctl *ctl, uint32_t handle, int signum, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_signal_service_async(dinitctl *ctl, dinitctl_service_handle *handle, int signum, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish signaling the service.
  *

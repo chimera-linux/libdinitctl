@@ -58,8 +58,14 @@
 /* Retrieve buffered output */
 #define DINIT_CP_CATLOG 20
 
-/* Send Signal to process */
+/* Send signal to process */
 #define DINIT_CP_SIGNAL 21
+
+/* Query service description directory */
+#define DINIT_CP_QUERYSERVICEDSCDIR 22
+
+/* Close a service handle */
+#define DINIT_CP_CLOSEHANDLE 23
 
 
 /* Replies */
@@ -130,6 +136,9 @@
 #define DINIT_RP_SIGNAL_NOPID 74
 #define DINIT_RP_SIGNAL_BADSIG 75
 #define DINIT_RP_SIGNAL_KILLERR 76
+
+/* Service description directory */
+#define DINIT_RP_SVCDSCDIR 77
 
 /* Information (out-of-band) */
 
