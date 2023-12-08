@@ -646,6 +646,12 @@ DINITCTL_API void dinitctl_close(dinitctl *ctl) {
     close(ctl->fd);
     free(ctl->read_buf);
     free(ctl->write_buf);
+    /* free handle management stuff */
+    while (ctl->hndl_chunk) {
+        struct dinitctl_handle_chunk *next = ctl->hndl_chunk->next;
+        free(ctl->hndl_chunk);
+        ctl->hndl_chunk = next;
+    }
     /* free any remaining allocated ops */
     while (ctl->op_avail) {
         struct dinitctl_op *next = ctl->op_avail->next;
