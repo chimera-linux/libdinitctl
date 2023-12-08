@@ -3,6 +3,12 @@
 #ifndef LIBDINITCTL_MESSAGES_H
 #define LIBDINITCTL_MESSAGES_H
 
+/* This is a lie, but we want to support 0.17.1 with CLOSEHANDLE patched in
+ *
+ * TODO: bump to 4 once 0.17.2 is out
+ */
+#define DINIT_PROTOCOLVER 3
+
 /* Query protocol version */
 #define DINIT_CP_QUERYVERSION 0
 

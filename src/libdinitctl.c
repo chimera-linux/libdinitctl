@@ -13,6 +13,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <unistd.h>
@@ -59,8 +60,10 @@ static dinitctl_service_handle *handle_add(dinitctl *ctl, uint32_t key) {
         chnk->next = ctl->hndl_chunk;
         /* link up the free handles */
         for (size_t i = 0; i < (HANDLE_CHUNKN - 1); ++i) {
+            chnk->data[i].idx = UINT32_MAX;
             chnk->data[i].next = &chnk->data[i + 1];
         }
+        chnk->data[HANDLE_CHUNKN - 1].idx = UINT32_MAX;
         chnk->data[HANDLE_CHUNKN - 1].next = NULL;
         ctl->hndl_unused = chnk->data;
         ctl->hndl_chunk = chnk;
@@ -91,25 +94,24 @@ static int handle_check(dinitctl *ctl, char *buf) {
     return 0;
 }
 
-/* assumes existence has bee verified already */
+/* assumes existence has been verified already */
 static void handle_del(dinitctl *ctl, uint32_t key) {
     dinitctl_service_handle *hptr = ctl->hndl_map[key % HANDLE_BUCKETN];
-    /* empty bucket */
-    if (hptr->idx == key) {
-        hptr->next = ctl->hndl_unused;
-        ctl->hndl_unused = hptr;
-        ctl->hndl_map[key % HANDLE_BUCKETN] = NULL;
-    }
-    /* otherwise find it */
-    while (hptr->next) {
-        dinitctl_service_handle *nd = hptr->next;
-        if (nd->idx == key) {
-            /* unlink internal chain */
-            hptr->next = nd->next;
-            nd->next = ctl->hndl_unused;
-            ctl->hndl_unused = nd;
+    dinitctl_service_handle *hprev = NULL;
+    while (hptr) {
+        if (hptr->idx == key) {
+            if (hprev) {
+                hprev->next = hptr->next;
+            } else {
+                ctl->hndl_map[key % HANDLE_BUCKETN] = hptr->next;
+            }
+            hptr->idx = UINT32_MAX;
+            hptr->next = ctl->hndl_unused;
+            ctl->hndl_unused = hptr;
             break;
         }
+        hprev = hptr;
+        hptr = hptr->next;
     }
 }
 
@@ -302,6 +304,11 @@ DINITCTL_API int dinitctl_dispatch(dinitctl *ctl, int timeout, bool *ops_left) {
     /* no events queued, prevent getting stuck forever */
     if (!ctl->op_queue) {
         return 0;
+    }
+    /* polling on -1 would do potentially infinite poll */
+    if (ctl->fd < 0) {
+        errno = EPIPE;
+        return -1;
     }
     pfd.fd = ctl->fd;
     pfd.events = POLLIN | POLLHUP;
@@ -534,8 +541,10 @@ static int version_check(dinitctl *ctl) {
     memcpy(&min_compat, &ctl->read_buf[1], sizeof(min_compat));
     memcpy(&cp_ver, &ctl->read_buf[1 + sizeof(min_compat)], sizeof(cp_ver));
 
-    /* this library is made with protocol v4 in mind */
-    if ((cp_ver < 4) || (min_compat > 4)) {
+    /* the remote side must be at least our protocol version, while still
+     * explicitly supporting our protocol version (no API break)
+     */
+    if ((cp_ver < DINIT_PROTOCOLVER) || (min_compat > DINIT_PROTOCOLVER)) {
         errno = ENOTSUP;
         return -1;
     }
@@ -619,6 +628,9 @@ DINITCTL_API dinitctl *dinitctl_open_fd(int fd) {
 
     if (!bleed_queue(ctl) || cvret) {
         int err = errno;
+        /* make sure we don't get stuck polling */
+        close(ctl->fd);
+        ctl->fd = -1;
         dinitctl_close(ctl);
         errno = err;
         return NULL;
@@ -706,7 +718,7 @@ static int load_service_check(dinitctl *ctl) {
                 return 1;
             }
             /* ensure the handle is not already present */
-            if (handle_check(ctl, &ctl->read_buf[2]) < 0) {
+            if (!handle_check(ctl, &ctl->read_buf[2])) {
                 return -1;
             }
             return 0;
