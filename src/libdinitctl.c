@@ -1431,7 +1431,6 @@ DINITCTL_API int dinitctl_get_service_directory(
 }
 
 static int get_service_directory_check(dinitctl *ctl) {
-    printf("CHECKDIR\n");
     switch (ctl->read_buf[0]) {
         case DINIT_RP_NAK:
             return 0;
