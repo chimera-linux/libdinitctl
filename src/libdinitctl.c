@@ -1396,6 +1396,141 @@ DINITCTL_API int dinitctl_unpin_service_finish(dinitctl *ctl) {
     return consume_enum(ctl, DINITCTL_SUCCESS);
 }
 
+struct get_service_dir_ret {
+    char **out;
+    ssize_t *outs;
+    int code;
+};
+
+static void get_service_dir_cb(dinitctl *ctl, void *data) {
+    struct get_service_dir_ret *ret = data;
+    ret->code = dinitctl_get_service_directory_finish(ctl, ret->out, ret->outs);
+}
+
+DINITCTL_API int dinitctl_get_service_directory(
+    dinitctl *ctl,
+    dinitctl_service_handle *handle,
+    char **dir,
+    ssize_t *buf_len
+) {
+    struct get_service_dir_ret ret;
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    ret.out = dir;
+    ret.outs = buf_len;
+    if (dinitctl_get_service_directory_async(
+        ctl, handle, &get_service_dir_cb, &ret
+    ) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret.code;
+}
+
+static int get_service_directory_check(dinitctl *ctl) {
+    printf("CHECKDIR\n");
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_NAK:
+            return 0;
+        case DINIT_RP_SVCDSCDIR: {
+            uint32_t dlen;
+            if (ctl->read_size < (sizeof(dlen) + 1)) {
+                return 1;
+            }
+            memcpy(&dlen, &ctl->read_buf[1], sizeof(dlen));
+            if (ctl->read_size < (dlen + sizeof(dlen) + 1)) {
+                return 1;
+            }
+            return 0;
+        }
+        default:
+            break;
+    }
+    return -1;
+}
+
+DINITCTL_API int dinitctl_get_service_directory_async(
+    dinitctl *ctl,
+    dinitctl_service_handle *handle,
+    dinitctl_async_cb cb,
+    void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    if (!handle_verify(ctl, handle)) {
+        return -1;
+    }
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, sizeof(handle->idx) + 2, true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = DINIT_CP_QUERYSERVICEDSCDIR;
+    buf[1] = 0;
+    memcpy(&buf[2], &handle->idx, sizeof(handle->idx));
+
+    qop->check_cb = &get_service_directory_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_get_service_directory_finish(
+    dinitctl *ctl, char **dir, ssize_t *buf_len
+) {
+    uint32_t nlen;
+    size_t alen, wlen;
+    int ret = DINITCTL_SUCCESS;
+
+    if (ctl->read_buf[0] == DINIT_RP_NAK) {
+        return consume_enum(ctl, DINITCTL_ERROR);
+    }
+
+    memcpy(&nlen, &ctl->read_buf[1], sizeof(nlen));
+    alen = nlen;
+
+    if (*buf_len < 0) {
+        /* allocate the storage */
+        *dir = malloc(alen + 1);
+        if (!*dir) {
+            ret = -1;
+            goto do_ret;
+        }
+        wlen = alen;
+    } else if (!*buf_len) {
+        /* pure length query */
+        *buf_len = alen;
+        goto do_ret;
+    } else {
+        wlen = *buf_len - 1;
+        if (alen < wlen) {
+            wlen = alen;
+        }
+    }
+
+    memcpy(*dir, &ctl->read_buf[1 + sizeof(nlen)], wlen);
+    /* terminate */
+    *dir[wlen] = '\0';
+    *buf_len = alen;
+
+do_ret:
+    consume_recvbuf(ctl, nlen + sizeof(nlen) + 1);
+    return ret;
+}
+
 struct get_service_name_ret {
     char **out;
     ssize_t *outs;

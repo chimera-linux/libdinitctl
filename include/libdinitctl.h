@@ -756,6 +756,64 @@ DINITCTL_API int dinitctl_unpin_service_async(dinitctl *ctl, dinitctl_service_ha
  */
 DINITCTL_API int dinitctl_unpin_service_finish(dinitctl *ctl);
 
+/** @brief Get service description directory.
+ *
+ * Synchronous variant of dinitctl_get_service_directory_async().
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param[out] dir The directory.
+ * @param[inout] buf_len Optional buffer length.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_get_service_directory(dinitctl *ctl, dinitctl_service_handle *handle, char **dir, ssize_t *buf_len);
+
+/** @brief Get service description directory.
+ *
+ * This will get the directory where the service description for
+ * handle found with dinitctl_load_service_async() is.
+ *
+ * May fail with EINVAL or ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param handle The service handle.
+ * @param cb The callback.
+ * @param data The data to pass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_get_service_directory_async(dinitctl *ctl, dinitctl_service_handle *handle, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish getting the service description directory.
+ *
+ * Invoked from the callback to dinitctl_get_service_directory_async().
+ *
+ * The buf_len parameter is expected to always point to a valid value.
+ * If the value is negative, it means the storage for dir should be
+ * allocated (and the user will be responsible for freeing it).
+ *
+ * Otherwise dir is expected to point to a pre-allocated buffer of the
+ * given length, and the directory will be written there and potentially
+ * truncated. The buf_len will be updated to the actual length of the
+ * directory (without a terminating zero) regardless of if there is enough
+ * storage for it.
+ *
+ * If the given buffer length is zero, dir is not touched at all, and
+ * the dir length will still be updated. This is essentially a pure length
+ * query.
+ *
+ * May fail with DINITCTL_ERROR (in case of rejection by remote side) or
+ * with ENOMEM if the dir needs allocation and it fails.
+ *
+ * @param ctl The dinitctl.
+ * @param[out] dir The directory.
+ * @param[inout] buf_len Optional buffer length.
+ *
+ * @return Zero on success or a positive error code.
+ */
+DINITCTL_API int dinitctl_get_service_directory_finish(dinitctl *ctl, char **dir, ssize_t *buf_len);
+
 /** @brief Get service name.
  *
  * Synchronous variant of dinitctl_get_service_name_async().
