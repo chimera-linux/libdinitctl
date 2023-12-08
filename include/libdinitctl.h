@@ -23,6 +23,13 @@
  * values) and a negative value means an unrecoverable error (in which case
  * errno is set and the connection should be aborted and reestablished).
  *
+ * The libdinitctl implements the client protocol of a certain version. It
+ * may still be possible to use the library if the remote side only supports
+ * an older version, but APIs unimplemented on the remote side will return
+ * -1 and set errno to ENOTSUPP. The minimum protocol version that the library
+ * can negotiate at all however is 4 (dinit 0.17.2), any older will fail to
+ * establish the connection.
+ *
  * Asynchronous APIs will only ever run their final callback if a recoverable
  * condition is encountered; that means the finish APIs will only ever return
  * success, recoverable failure, or a system failure (e.g. failed allocation)
