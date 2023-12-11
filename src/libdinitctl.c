@@ -170,6 +170,7 @@ static struct dinitctl_op *new_op(dinitctl *ctl) {
         ret = malloc(sizeof(struct dinitctl_op));
     }
     ret->next = NULL;
+    ret->errnov = 0;
     return ret;
 }
 
@@ -394,7 +395,13 @@ DINITCTL_API int dinitctl_dispatch(dinitctl *ctl, int timeout, bool *ops_left) {
             return -1;
         }
         errno = 0;
-        int chk = op->check_cb(ctl);
+        int chk;
+        if (ctl->read_size > 0) {
+            chk = op->check_cb(ctl);
+        } else {
+            /* if we run out of data, block */
+            chk = 1;
+        }
         if (chk < 0) {
             /* error */
             if (!errno) {
@@ -422,6 +429,11 @@ DINITCTL_API int dinitctl_dispatch(dinitctl *ctl, int timeout, bool *ops_left) {
         /* free up the operation for reuse */
         op->next = ctl->op_avail;
         ctl->op_avail = op;
+        /* return early if needed */
+        if (op->errnov) {
+            errno = op->errnov;
+            return -1;
+        }
     }
     if (ops_left) {
         *ops_left = false;
@@ -431,6 +443,10 @@ DINITCTL_API int dinitctl_dispatch(dinitctl *ctl, int timeout, bool *ops_left) {
         return -1;
     }
     return ops;
+}
+
+DINITCTL_API void dinitctl_abort(dinitctl *ctl, int errnov) {
+    ctl->op_queue->errnov = errnov;
 }
 
 static bool bleed_queue(dinitctl *ctl) {
@@ -640,8 +656,6 @@ DINITCTL_API dinitctl *dinitctl_open_fd(int fd) {
 }
 
 DINITCTL_API void dinitctl_close(dinitctl *ctl) {
-    /* finish processing what we can */
-    bleed_queue(ctl);
     /* then close the associated stuff */
     close(ctl->fd);
     free(ctl->read_buf);

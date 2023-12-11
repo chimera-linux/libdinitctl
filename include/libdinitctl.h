@@ -343,7 +343,9 @@ DINITCTL_API int dinitctl_get_fd(dinitctl *ctl);
  * Upon unrecoverable error, this function returns a negative value. An
  * unrecoverable error may be the other side closing the connection,
  * a system error like an allocation failure, or a protocol error while
- * handling events. For those cases, errno will be set.
+ * handling events. For those cases, errno will be set. A negative value
+ * may also be returned if interrupted by signal, in that case you should
+ * just dispatch again.
  *
  * @param ctl The dinitctl.
  * @param timeout The timeout.
@@ -352,6 +354,21 @@ DINITCTL_API int dinitctl_get_fd(dinitctl *ctl);
  * @return The number of events processed.
  */
 DINITCTL_API int dinitctl_dispatch(dinitctl *ctl, int timeout, bool *ops_left);
+
+/** @brief Abort a dispatch.
+ *
+ * This is meant to be called from async callbacks. The passed errno
+ * parameter must be a non-zero standard errno value, e.g. the one
+ * returned from finish calls. If called, the current dispatch will
+ * exit immediately after the callback returns with the given errno
+ * code.
+ *
+ * This function cannot fail, and assumes the ctl is valid.
+ *
+ * @param ctl The dinitctl.
+ * @param errno The errno.
+ */
+DINITCTL_API void dinitctl_abort(dinitctl *ctl, int errnov);
 
 /** @brief Set the service event callback.
  *

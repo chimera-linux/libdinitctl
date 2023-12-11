@@ -16,6 +16,7 @@ struct dinitctl_op {
     void *do_data;
     struct dinitctl_op *next;
     dinitctl_service_handle *handle;
+    int errnov;
     bool flag;
 };
 

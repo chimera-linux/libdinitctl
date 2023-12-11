@@ -3,3 +3,10 @@ option(
     type: 'string',
     value: '/run/dinitctl',
 )
+
+option(
+    'dbus',
+    description: 'Whether to build the D-Bus interface',
+    type: 'feature',
+    value: 'auto',
+)
