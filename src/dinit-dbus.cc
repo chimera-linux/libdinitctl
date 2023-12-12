@@ -480,10 +480,7 @@ struct pending_msg {
         conn{c}, msg{dbus_message_ref(p)}
     {}
     pending_msg(pending_msg const &) = delete;
-    pending_msg(pending_msg &&v) {
-        std::memcpy(this, &v, sizeof(pending_msg));
-        std::memset(&v, 0, sizeof(pending_msg));
-    }
+    pending_msg(pending_msg &&v) = delete;
     ~pending_msg() {
         if (msg) {
             dbus_message_unref(msg);
@@ -506,11 +503,7 @@ struct pending_msg {
     }
 
     pending_msg &operator=(pending_msg const &) = delete;
-    pending_msg &operator=(pending_msg &&v) {
-        std::memcpy(this, &v, sizeof(pending_msg));
-        std::memset(&v, 0, sizeof(pending_msg));
-        return *this;
-    }
+    pending_msg &operator=(pending_msg &&v) = delete;
 };
 
 static std::forward_list<pending_msg> pending_msgs;
