@@ -385,6 +385,14 @@ DINITCTL_API int dinitctl_dispatch(dinitctl *ctl, int timeout, bool *ops_left) {
     }
     /* we have definitely read some bytes, try processing */
     ops = 0;
+    /* if we previously didn't have an event, maybe we have one now? */
+    if (!ctl->op_queue && ctl->read_size) {
+        if (ctl->read_buf[0] < 100) {
+            errno = EBADMSG;
+            return -1;
+        }
+        goto add_event;
+    }
     while (ctl->op_queue) {
         struct dinitctl_op *op = ctl->op_queue;
         /* process service events; this involves queuing an event ahead
@@ -395,8 +403,9 @@ DINITCTL_API int dinitctl_dispatch(dinitctl *ctl, int timeout, bool *ops_left) {
             (ctl->read_buf[0] >= 100) &&
             (op->check_cb != &event_check)
         ) {
+            struct dinitctl_op *nop;
 add_event:
-            struct dinitctl_op *nop = new_op(ctl);
+            nop = new_op(ctl);
             if (!nop) {
                 return -1;
             }

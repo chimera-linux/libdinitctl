@@ -42,6 +42,7 @@
 #include <cstdint>
 #include <ctime>
 #include <vector>
+#include <forward_list>
 #include <string>
 #include <utility>
 #include <new>
@@ -67,6 +68,13 @@
 #define BUS_ERROR_NS BUS_NAME ".Error."
 #define BUS_ERROR BUS_ERROR_NS "Failed"
 
+#if 1
+#define ACTIVATOR_TARGET "/org/freedesktop/DBus"
+#define ACTIVATOR_DEST "org.freedesktop.DBus"
+#else
+#define ACTIVATOR_TARGET BUS_OBJ
+#define ACTIVATOR_DEST BUS_NAME
+#endif
 #define ACTIVATOR_IFACE BUS_NAME ".Activator"
 #define ACTIVATOR_SIGNAL "Activate"
 #define ACTIVATOR_FAILURE "ActivationFailure"
@@ -505,16 +513,17 @@ struct pending_msg {
     }
 };
 
-static std::vector<pending_msg> pending_msgs;
+static std::forward_list<pending_msg> pending_msgs;
 
 static pending_msg &add_pending(DBusConnection *conn, DBusMessage *msg) {
-    return pending_msgs.emplace_back(conn, msg);
+    return pending_msgs.emplace_front(conn, msg);
 }
 
 static void drop_pending(pending_msg &msg) {
-    for (auto it = pending_msgs.begin(); it != pending_msgs.end(); ++it) {
-        if (&*it == &msg) {
-            pending_msgs.erase(it);
+    auto it = pending_msgs.before_begin();
+    for (auto pit = it++; it != pending_msgs.end(); pit = it++) {
+        if (it->msg == msg.msg) {
+            pending_msgs.erase_after(pit);
             break;
         }
     }
@@ -1691,6 +1700,12 @@ struct manager_activate_service {
             drop_pending(pend);
             return false;
         }
+        if (!dbus_message_set_destination(ret, ACTIVATOR_DEST)) {
+            warnx("failed set failure destination");
+            dbus_message_unref(ret);
+            drop_pending(pend);
+            return false;
+        }
         if (!dbus_connection_send(pend.conn, ret, nullptr)) {
             warnx("failed to send activation failure");
             dbus_message_unref(ret);
@@ -1820,101 +1835,103 @@ static void dinit_event_cb(
     dinitctl_service_status const *status,
     void *
 ) {
-    for (auto it = pending_msgs.begin(); it != pending_msgs.end(); ++it) {
-        if (it->handle == handle) {
-            /* event is for activation signal */
-            if (it->is_signal) {
-                /* emit possible activation failure here */
-                char const *reason = nullptr;
-                switch (event) {
-                    case DINITCTL_SERVICE_EVENT_START_FAILED:
-                        switch (status->stop_reason) {
-                            case DINITCTL_SERVICE_STOP_REASON_DEP_FAILED:
-                                reason = "Dependency has failed to start";
-                                break;
-                            case DINITCTL_SERVICE_STOP_REASON_TIMEOUT:
-                                reason = "Service startup timed out";
-                                break;
-                            case DINITCTL_SERVICE_STOP_REASON_EXEC_FAILED:
-                                reason = "Service process execution failed";
-                                break;
-                            case DINITCTL_SERVICE_STOP_REASON_FAILED:
-                                reason = "Service process terminated before ready";
-                                break;
-                            default:
-                                reason = "Service startup failed (unknown)";
-                                break;
-                        }
-                        break;
-                    case DINITCTL_SERVICE_EVENT_START_CANCELED:
-                        reason = "Service startup canceled";
-                        break;
-                    default:
-                        /* consider other events successful */
-                        break;
-                }
-                if (reason) {
-                    if (!manager_activate_service::issue_failure(*it, reason)) {
-                        dinitctl_abort(sctl, EBADMSG);
+    auto it = pending_msgs.before_begin();
+    for (auto pit = it++; it != pending_msgs.end(); pit = it++) {
+        if (it->handle != handle) {
+            continue;
+        }
+        /* event is for activation signal */
+        if (it->is_signal) {
+            /* emit possible activation failure here */
+            char const *reason = nullptr;
+            switch (event) {
+                case DINITCTL_SERVICE_EVENT_START_FAILED:
+                    switch (status->stop_reason) {
+                        case DINITCTL_SERVICE_STOP_REASON_DEP_FAILED:
+                            reason = "Dependency has failed to start";
+                            break;
+                        case DINITCTL_SERVICE_STOP_REASON_TIMEOUT:
+                            reason = "Service startup timed out";
+                            break;
+                        case DINITCTL_SERVICE_STOP_REASON_EXEC_FAILED:
+                            reason = "Service process execution failed";
+                            break;
+                        case DINITCTL_SERVICE_STOP_REASON_FAILED:
+                            reason = "Service process terminated before ready";
+                            break;
+                        default:
+                            reason = "Service startup failed (unknown)";
+                            break;
                     }
-                } else {
-                    pending_msgs.erase(it);
+                    break;
+                case DINITCTL_SERVICE_EVENT_START_CANCELED:
+                    reason = "Service startup canceled";
+                    break;
+                default:
+                    /* consider other events successful */
+                    break;
+            }
+            if (reason) {
+                if (!manager_activate_service::issue_failure(*it, reason)) {
+                    dinitctl_abort(sctl, EBADMSG);
                 }
-                break;
+            } else {
+                pending_msgs.erase_after(pit);
             }
-            char const *estr = enum_to_str(
-                int(event), service_event_str, sizeof(service_event_str), nullptr
-            );
-            if (!estr) {
-                pending_msgs.erase(it);
-                break;
-            }
-            /* emit the signal here */
-            DBusMessage *ret = dbus_message_new_signal(
-                BUS_OBJ, BUS_IFACE, "ServiceEvent"
-            );
-            if (!ret) {
-                pending_msgs.erase(it);
-                warnx("could not create service event signal");
-                dinitctl_abort(sctl, EBADMSG);
-                break;
-            }
-            dbus_uint32_t ser = dbus_message_get_serial(it->msg);
-            DBusMessageIter iter, siter;
-            dbus_message_iter_init_append(ret, &iter);
-            if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_UINT32, &ser)) {
-                goto container_err;
-            }
-            if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &estr)) {
-                goto container_err;
-            }
-            if (!dbus_message_iter_open_container(
-                &iter, DBUS_TYPE_STRUCT, nullptr, &siter
-            )) {
-                goto container_err;
-            }
-            if (!append_status(*status, &siter)) {
-                dbus_message_iter_abandon_container(&iter, &siter);
-                goto container_err;
-            }
-            if (!dbus_message_iter_close_container(&iter, &siter)) {
-                dbus_message_iter_abandon_container(&iter, &siter);
-                goto container_err;
-            }
-            if (!dbus_connection_send(it->conn, ret, nullptr)) {
-                pending_msgs.erase(it);
-                warnx("could not send event signal");
-                dinitctl_abort(sctl, EBADMSG);
-                break;
-            }
-            pending_msgs.erase(it);
             break;
-container_err:
-            pending_msgs.erase(it);
-            warnx("could not build event aguments");
+        }
+        char const *estr = enum_to_str(
+            int(event), service_event_str, sizeof(service_event_str), nullptr
+        );
+        if (!estr) {
+            pending_msgs.erase_after(pit);
+            break;
+        }
+        /* emit the signal here */
+        DBusMessage *ret = dbus_message_new_signal(
+            BUS_OBJ, BUS_IFACE, "ServiceEvent"
+        );
+        if (!ret) {
+            pending_msgs.erase_after(pit);
+            warnx("could not create service event signal");
             dinitctl_abort(sctl, EBADMSG);
             break;
         }
+        dbus_uint32_t ser = dbus_message_get_serial(it->msg);
+        DBusMessageIter iter, siter;
+        dbus_message_iter_init_append(ret, &iter);
+        if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_UINT32, &ser)) {
+            goto container_err;
+        }
+        if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &estr)) {
+            goto container_err;
+        }
+        if (!dbus_message_iter_open_container(
+            &iter, DBUS_TYPE_STRUCT, nullptr, &siter
+        )) {
+            goto container_err;
+        }
+        if (!append_status(*status, &siter)) {
+            dbus_message_iter_abandon_container(&iter, &siter);
+            goto container_err;
+        }
+        if (!dbus_message_iter_close_container(&iter, &siter)) {
+            dbus_message_iter_abandon_container(&iter, &siter);
+            goto container_err;
+        }
+        if (!dbus_connection_send(it->conn, ret, nullptr)) {
+            pending_msgs.erase_after(pit);
+            warnx("could not send event signal");
+            dinitctl_abort(sctl, EBADMSG);
+            break;
+        }
+        pending_msgs.erase_after(pit);
+        break;
+container_err:
+        pending_msgs.erase_after(pit);
+        warnx("could not build event aguments");
+        dinitctl_abort(sctl, EBADMSG);
+        break;
     }
 }
 
@@ -1981,7 +1998,7 @@ static int dbus_main(DBusConnection *conn) {
     dbus_bus_add_match(
         conn,
         "type='signal',"
-        "path='/org/freedesktop/DBus',"
+        "path='" ACTIVATOR_TARGET "',"
         "destination='" BUS_NAME "',"
         "interface='" ACTIVATOR_IFACE "',"
         "member='" ACTIVATOR_SIGNAL "'",
@@ -2183,7 +2200,6 @@ int main(int argc, char **argv) {
     watches.reserve(4);
     timers.reserve(4);
     fds.reserve(16);
-    pending_msgs.reserve(8);
 
     for (int c; (c = getopt(argc, argv, "a:f:hS:s")) > 0;) {
         switch (c) {
