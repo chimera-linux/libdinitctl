@@ -40,6 +40,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <cassert>
 #include <ctime>
 #include <vector>
 #include <forward_list>
@@ -471,11 +472,14 @@ struct pending_msg {
     DBusMessage *msg;
     dinitctl_service_handle *handle = nullptr;
     dinitctl_service_handle *handle2 = nullptr;
+    pending_msg *next = nullptr;
     void *data;
     int type;
     dbus_bool_t reload, pin, gentle, remove, enable, is_signal = FALSE;
 
-    pending_msg() = delete;
+    pending_msg():
+        conn{nullptr}, msg{nullptr}
+    {}
     pending_msg(DBusConnection *c, DBusMessage *p):
         conn{c}, msg{dbus_message_ref(p)}
     {}
@@ -506,21 +510,100 @@ struct pending_msg {
     pending_msg &operator=(pending_msg &&v) = delete;
 };
 
-static std::forward_list<pending_msg> pending_msgs;
+struct msg_list {
+    static constexpr std::size_t chksize = 8;
 
-static pending_msg &add_pending(DBusConnection *conn, DBusMessage *msg) {
-    return pending_msgs.emplace_front(conn, msg);
-}
+    struct chunk {
+        pending_msg msg[chksize];
+        chunk *next;
+    };
+    chunk *chunk_avail = nullptr;
+    pending_msg *msg_unused = nullptr, *msg_top = nullptr;
 
-static void drop_pending(pending_msg &msg) {
-    auto it = pending_msgs.before_begin();
-    for (auto pit = it++; it != pending_msgs.end(); pit = it++) {
-        if (it->msg == msg.msg) {
-            pending_msgs.erase_after(pit);
-            break;
-        }
+    ~msg_list() {
+        clear();
     }
-}
+
+    void clear() {
+        while (chunk_avail) {
+            auto *chk = chunk_avail;
+            chunk_avail = chk->next;
+            for (std::size_t i = 0; i < chksize; ++i) {
+                chk->msg[i].~pending_msg();
+            }
+            std::free(chk);
+        }
+        chunk_avail = nullptr;
+        msg_unused = msg_top = nullptr;
+    }
+
+    pending_msg *reserve_chunk() {
+        chunk *chk = static_cast<chunk *>(calloc(1, sizeof(chunk)));
+        if (!chk) {
+            return nullptr;
+        }
+        for (std::size_t i = 0; i < (chksize - 1); ++i) {
+            new (&chk->msg[i]) pending_msg{};
+            chk->msg[i].next = &chk->msg[i + 1];
+        }
+        new (&chk->msg[chksize - 1]) pending_msg{};
+        chk->msg[chksize - 1].next = msg_unused;
+        chk->next = chunk_avail;
+        chunk_avail = chk;
+        msg_unused = chk->msg;
+        return msg_unused;
+    }
+
+    pending_msg *add(DBusConnection *conn, DBusMessage *msg) {
+        auto *p = msg_unused;
+        if (!p && !(p = reserve_chunk())) {
+            return nullptr;
+        }
+        msg_unused = msg_unused->next;
+        p->~pending_msg();
+        new (p) pending_msg{conn, msg};
+        p->next = msg_top;
+        msg_top = p;
+        return p;
+    }
+
+    pending_msg *begin() const {
+        return msg_top;
+    }
+
+    void drop(pending_msg &p) {
+        auto *pp = &p;
+        if (pp == msg_top) {
+            drop_at(nullptr, p);
+            return;
+        }
+        auto *prevp = msg_top, *curp = prevp->next;
+        while (curp) {
+            if (curp == pp) {
+                drop_at(prevp, p);
+                return;
+            }
+            prevp = curp;
+            curp = curp->next;
+        }
+        /* should be unreachable */
+        assert(false);
+    }
+
+    void drop_at(pending_msg *pp, pending_msg &p) {
+        if (!pp) {
+            msg_top = p.next;
+        } else {
+            pp->next = p.next;
+        }
+        p.~pending_msg();
+        new (&p) pending_msg{};
+        p.next = msg_unused;
+        msg_unused = pp;
+    }
+};
+
+static msg_list pending_msgs;
 
 template<typename ...A>
 static bool msg_get_args(DBusMessage *msg, A const &...args) {
@@ -552,12 +635,12 @@ static bool msg_send_error(
 
 static DBusMessage *msg_new_reply(dinitctl *sctl, pending_msg &pend) {
     if (dbus_message_get_no_reply(pend.msg)) {
-        drop_pending(pend);
+        pending_msgs.drop(pend);
         return nullptr;
     }
     DBusMessage *retm = dbus_message_new_method_return(pend.msg);
     if (!retm) {
-        drop_pending(pend);
+        pending_msgs.drop(pend);
         warnx("could not build method reply");
         dinitctl_abort(sctl, EBADMSG);
         return nullptr;
@@ -568,7 +651,7 @@ static DBusMessage *msg_new_reply(dinitctl *sctl, pending_msg &pend) {
 static bool check_error(dinitctl *sctl, pending_msg &pend, int ret) {
     if (ret < 0) {
         dinitctl_abort(sctl, errno);
-        drop_pending(pend);
+        pending_msgs.drop(pend);
         return false;
     } else if (ret) {
         if (!msg_send_error(
@@ -578,7 +661,7 @@ static bool check_error(dinitctl *sctl, pending_msg &pend, int ret) {
         )) {
             dinitctl_abort(sctl, EBADMSG);
         }
-        drop_pending(pend);
+        pending_msgs.drop(pend);
         return false;
     }
     return true;
@@ -588,7 +671,7 @@ static bool send_reply(dinitctl *sctl, pending_msg &pend, DBusMessage *retm) {
     if (!dbus_connection_send(pend.conn, retm, nullptr)) {
         warnx("dbus_connection_send failed");
         dinitctl_abort(sctl, EBADMSG);
-        drop_pending(pend);
+        pending_msgs.drop(pend);
         return false;
     }
     dbus_message_unref(retm);
@@ -602,13 +685,13 @@ static bool call_load_service(
     int ret = dinitctl_load_service_async(ctl, service_name, find, cb, &pend);
     if (ret < 0) {
         if (errno == EINVAL) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             return msg_send_error(
                 conn, pend.msg, DBUS_ERROR_INVALID_ARGS, nullptr
             );
         }
         warn("dinitctl_load_service_async");
-        drop_pending(pend);
+        pending_msgs.drop(pend);
         dinitctl_abort(ctl, EBADMSG);
         return false;
     }
@@ -627,7 +710,7 @@ struct manager_unload_service {
             return;
         }
         if (send_reply(sctl, pend, retm)) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
         }
     }
 
@@ -642,7 +725,7 @@ struct manager_unload_service {
             ctl, handle, pend.reload, async_cb, &pend
         ) < 0) {
             warn("dinitctl_unload_service_async");
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             dinitctl_abort(sctl, EBADMSG);
         }
     }
@@ -657,10 +740,13 @@ struct manager_unload_service {
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
         }
 
-        auto &pend = add_pending(conn, msg);
-        pend.reload = reload;
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+        pend->reload = reload;
 
-        return call_load_service(pend, conn, service_name, true, load_cb);
+        return call_load_service(*pend, conn, service_name, true, load_cb);
     }
 };
 
@@ -679,7 +765,7 @@ struct manager_start_service {
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_UINT32, &ser, DBUS_TYPE_INVALID
         )) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             warnx("could not set reply value");
             dinitctl_abort(sctl, EBADMSG);
             return;
@@ -699,7 +785,7 @@ struct manager_start_service {
             ctl, handle, pend.pin, async_cb, &pend
         ) < 0) {
             warn("dinitctl_start_service_async");
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             dinitctl_abort(sctl, EBADMSG);
         }
     }
@@ -714,10 +800,13 @@ struct manager_start_service {
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
         }
 
-        auto &pend = add_pending(conn, msg);
-        pend.pin = pin;
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+        pend->pin = pin;
 
-        return call_load_service(pend, conn, service_name, false, load_cb);
+        return call_load_service(*pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -736,7 +825,7 @@ struct manager_stop_service {
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_UINT32, &ser, DBUS_TYPE_INVALID
         )) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             warnx("could not set reply value");
             dinitctl_abort(sctl, EBADMSG);
             return;
@@ -756,7 +845,7 @@ struct manager_stop_service {
             ctl, handle, pend.pin, pend.reload, pend.gentle, async_cb, &pend
         ) < 0) {
             warn("dinitctl_stop_service_async");
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             dinitctl_abort(sctl, EBADMSG);
         }
     }
@@ -775,12 +864,15 @@ struct manager_stop_service {
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
         }
 
-        auto &pend = add_pending(conn, msg);
-        pend.pin = pin;
-        pend.reload = restart;
-        pend.gentle = gentle;
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+        pend->pin = pin;
+        pend->reload = restart;
+        pend->gentle = gentle;
 
-        return call_load_service(pend, conn, service_name, false, load_cb);
+        return call_load_service(*pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -799,7 +891,7 @@ struct manager_wake_service {
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_UINT32, &ser, DBUS_TYPE_INVALID
         )) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             warnx("could not set reply value");
             dinitctl_abort(sctl, EBADMSG);
             return;
@@ -819,7 +911,7 @@ struct manager_wake_service {
             ctl, handle, pend.pin, async_cb, &pend
         ) < 0) {
             warn("dinitctl_wake_service_async");
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             dinitctl_abort(sctl, EBADMSG);
         }
     }
@@ -834,10 +926,13 @@ struct manager_wake_service {
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
         }
 
-        auto &pend = add_pending(conn, msg);
-        pend.pin = pin;
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+        pend->pin = pin;
 
-        return call_load_service(pend, conn, service_name, false, load_cb);
+        return call_load_service(*pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -856,7 +951,7 @@ struct manager_release_service {
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_UINT32, &ser, DBUS_TYPE_INVALID
         )) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             warnx("could not set reply value");
             dinitctl_abort(sctl, EBADMSG);
             return;
@@ -876,7 +971,7 @@ struct manager_release_service {
             ctl, handle, pend.pin, async_cb, &pend
         ) < 0) {
             warn("dinitctl_release_service_async");
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             dinitctl_abort(sctl, EBADMSG);
         }
     }
@@ -891,10 +986,13 @@ struct manager_release_service {
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
         }
 
-        auto &pend = add_pending(conn, msg);
-        pend.pin = pin;
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+        pend->pin = pin;
 
-        return call_load_service(pend, conn, service_name, false, load_cb);
+        return call_load_service(*pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -910,7 +1008,7 @@ struct manager_unpin_service {
             return;
         }
         if (send_reply(sctl, pend, retm)) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
         }
     }
 
@@ -924,7 +1022,7 @@ struct manager_unpin_service {
         pend.handle = handle;
         if (dinitctl_unpin_service_async(ctl, handle, async_cb, &pend) < 0) {
             warn("dinitctl_unpin_service_async");
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             dinitctl_abort(sctl, EBADMSG);
         }
     }
@@ -936,9 +1034,12 @@ struct manager_unpin_service {
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
         }
 
-        auto &pend = add_pending(conn, msg);
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
 
-        return call_load_service(pend, conn, service_name, false, load_cb);
+        return call_load_service(*pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -954,7 +1055,7 @@ struct manager_add_remove_dep {
             return;
         }
         if (send_reply(sctl, pend, retm)) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
         }
     }
 
@@ -981,7 +1082,7 @@ struct manager_add_remove_dep {
             pend.remove, pend.enable, async_cb, &pend
         ) < 0) {
             warn("dinitctl_unpin_service_async");
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             dinitctl_abort(sctl, EBADMSG);
         }
     }
@@ -1009,13 +1110,16 @@ struct manager_add_remove_dep {
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
         }
 
-        auto &pend = add_pending(conn, msg);
-        pend.data = const_cast<char *>(to_name); /* owned by DBusMessage */
-        pend.remove = remove;
-        pend.enable = enable;
-        pend.type = dep_typei;
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+        pend->data = const_cast<char *>(to_name); /* owned by DBusMessage */
+        pend->remove = remove;
+        pend->enable = enable;
+        pend->type = dep_typei;
 
-        return call_load_service(pend, conn, from_name, false, load_cb);
+        return call_load_service(*pend, conn, from_name, false, load_cb);
     }
 };
 
@@ -1035,7 +1139,7 @@ struct manager_get_service_dir {
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_STRING, &dir, DBUS_TYPE_INVALID
         )) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             std::free(dir);
             warnx("could not set reply value");
             dinitctl_abort(sctl, EBADMSG);
@@ -1043,7 +1147,7 @@ struct manager_get_service_dir {
         }
         std::free(dir);
         if (send_reply(sctl, pend, retm)) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
         }
     }
 
@@ -1059,7 +1163,7 @@ struct manager_get_service_dir {
             ctl, handle, async_cb, &pend
         ) < 0) {
             warn("dinitctl_get_service_directory_async");
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             dinitctl_abort(sctl, EBADMSG);
         }
     }
@@ -1071,8 +1175,12 @@ struct manager_get_service_dir {
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
         }
 
-        auto &pend = add_pending(conn, msg);
-        return call_load_service(pend, conn, service_name, false, load_cb);
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+
+        return call_load_service(*pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -1092,7 +1200,7 @@ struct manager_get_service_log {
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_STRING, &log, DBUS_TYPE_INVALID
         )) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             std::free(log);
             warnx("could not set reply value");
             dinitctl_abort(sctl, EBADMSG);
@@ -1100,7 +1208,7 @@ struct manager_get_service_log {
         }
         std::free(log);
         if (send_reply(sctl, pend, retm)) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
         }
     }
 
@@ -1116,7 +1224,7 @@ struct manager_get_service_log {
             ctl, handle, pend.remove, async_cb, &pend
         ) < 0) {
             warn("dinitctl_get_service_log_async");
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             dinitctl_abort(sctl, EBADMSG);
         }
     }
@@ -1131,9 +1239,13 @@ struct manager_get_service_log {
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
         }
 
-        auto &pend = add_pending(conn, msg);
-        pend.remove = clear;
-        return call_load_service(pend, conn, service_name, false, load_cb);
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+        pend->remove = clear;
+
+        return call_load_service(*pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -1285,11 +1397,11 @@ struct manager_get_service_status {
             goto container_err;
         }
         if (send_reply(sctl, pend, retm)) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
         }
         return;
 container_err:
-        drop_pending(pend);
+        pending_msgs.drop(pend);
         warnx("could not initialize reply container");
         dinitctl_abort(sctl, EBADMSG);
         return;
@@ -1307,7 +1419,7 @@ container_err:
             ctl, handle, async_cb, &pend
         ) < 0) {
             warn("dinitctl_get_service_status_async");
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             dinitctl_abort(sctl, EBADMSG);
         }
     }
@@ -1319,8 +1431,12 @@ container_err:
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
         }
 
-        auto &pend = add_pending(conn, msg);
-        return call_load_service(pend, conn, service_name, true, load_cb);
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+
+        return call_load_service(*pend, conn, service_name, true, load_cb);
     }
 };
 
@@ -1336,7 +1452,7 @@ struct manager_set_service_trigger {
             return;
         }
         if (send_reply(sctl, pend, retm)) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
         }
     }
 
@@ -1352,7 +1468,7 @@ struct manager_set_service_trigger {
             ctl, handle, pend.enable, async_cb, &pend
         ) < 0) {
             warn("dinitctl_set_service_trigger_async");
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             dinitctl_abort(sctl, EBADMSG);
         }
     }
@@ -1367,9 +1483,13 @@ struct manager_set_service_trigger {
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
         }
 
-        auto &pend = add_pending(conn, msg);
-        pend.enable = val;
-        return call_load_service(pend, conn, service_name, false, load_cb);
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+        pend->enable = val;
+
+        return call_load_service(*pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -1385,7 +1505,7 @@ struct manager_signal_service {
             return;
         }
         if (send_reply(sctl, pend, retm)) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
         }
     }
 
@@ -1401,7 +1521,7 @@ struct manager_signal_service {
             ctl, handle, pend.type, async_cb, &pend
         ) < 0) {
             warn("dinitctl_signal_service_async");
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             dinitctl_abort(sctl, EBADMSG);
         }
     }
@@ -1416,9 +1536,13 @@ struct manager_signal_service {
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
         }
 
-        auto &pend = add_pending(conn, msg);
-        pend.type = val;
-        return call_load_service(pend, conn, service_name, false, load_cb);
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+        pend->type = val;
+
+        return call_load_service(*pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -1489,13 +1613,13 @@ struct manager_list_services {
         }
         if (send_reply(sctl, pend, retm)) {
             std::free(entries);
-            drop_pending(pend);
+            pending_msgs.drop(pend);
         }
         return;
 container_err:
         dbus_message_iter_abandon_container(&iter, &aiter);
         std::free(entries);
-        drop_pending(pend);
+        pending_msgs.drop(pend);
         warnx("could not initialize reply container");
         dinitctl_abort(sctl, EBADMSG);
     }
@@ -1505,11 +1629,14 @@ container_err:
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
         }
 
-        auto &pend = add_pending(conn, msg);
-        int ret = dinitctl_list_services_async(ctl, async_cb, &pend);
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+        int ret = dinitctl_list_services_async(ctl, async_cb, pend);
         if (ret < 0) {
             warn("dinitctl_list_services_async");
-            drop_pending(pend);
+            pending_msgs.drop(*pend);
             dinitctl_abort(ctl, EBADMSG);
             return false;
         }
@@ -1529,7 +1656,7 @@ struct manager_set_env {
             return;
         }
         if (send_reply(sctl, pend, retm)) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
         }
     }
 
@@ -1540,18 +1667,21 @@ struct manager_set_env {
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
         }
 
-        auto &pend = add_pending(conn, msg);
-        pend.data = const_cast<char *>(envs);
-        int ret = dinitctl_setenv_async(ctl, envs, async_cb, &pend);
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+        pend->data = const_cast<char *>(envs);
+        int ret = dinitctl_setenv_async(ctl, envs, async_cb, pend);
         if (ret < 0) {
             if (errno == EINVAL) {
-                drop_pending(pend);
+                pending_msgs.drop(*pend);
                 return msg_send_error(
-                    conn, pend.msg, DBUS_ERROR_INVALID_ARGS, nullptr
+                    conn, pend->msg, DBUS_ERROR_INVALID_ARGS, nullptr
                 );
             }
             warn("dinitctl_setenv_async");
-            drop_pending(pend);
+            pending_msgs.drop(*pend);
             dinitctl_abort(ctl, EBADMSG);
             return false;
         }
@@ -1571,7 +1701,7 @@ struct manager_shutdown {
             return;
         }
         if (send_reply(sctl, pend, retm)) {
-            drop_pending(pend);
+            pending_msgs.drop(pend);
         }
     }
 
@@ -1588,19 +1718,22 @@ struct manager_shutdown {
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
         }
 
-        auto &pend = add_pending(conn, msg);
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
         int ret = dinitctl_shutdown_async(
-            ctl, dinitctl_shutdown_type(stypei), async_cb, &pend
+            ctl, dinitctl_shutdown_type(stypei), async_cb, pend
         );
         if (ret < 0) {
             if (errno == EINVAL) {
-                drop_pending(pend);
+                pending_msgs.drop(*pend);
                 return msg_send_error(
-                    conn, pend.msg, DBUS_ERROR_INVALID_ARGS, nullptr
+                    conn, pend->msg, DBUS_ERROR_INVALID_ARGS, nullptr
                 );
             }
             warn("dinitctl_shutdown_async");
-            drop_pending(pend);
+            pending_msgs.drop(*pend);
             dinitctl_abort(ctl, EBADMSG);
             return false;
         }
@@ -1641,13 +1774,13 @@ struct manager_query_dirs {
         }
         if (send_reply(sctl, pend, retm)) {
             std::free(dirs);
-            drop_pending(pend);
+            pending_msgs.drop(pend);
         }
         return;
 container_err:
         dbus_message_iter_abandon_container(&iter, &aiter);
         std::free(dirs);
-        drop_pending(pend);
+        pending_msgs.drop(pend);
         warnx("could not initialize reply container");
         dinitctl_abort(sctl, EBADMSG);
     }
@@ -1657,11 +1790,14 @@ container_err:
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
         }
 
-        auto &pend = add_pending(conn, msg);
-        int ret = dinitctl_query_service_dirs_async(ctl, async_cb, &pend);
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+        int ret = dinitctl_query_service_dirs_async(ctl, async_cb, pend);
         if (ret < 0) {
             warn("dinitctl_query_service_dirs_async");
-            drop_pending(pend);
+            pending_msgs.drop(*pend);
             dinitctl_abort(ctl, EBADMSG);
             return false;
         }
@@ -1676,7 +1812,7 @@ struct manager_activate_service {
         );
         if (!ret) {
             warnx("failed to create activation failure signal");
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             return false;
         }
         char const *service_name = static_cast<char *>(pend.data);
@@ -1690,22 +1826,22 @@ struct manager_activate_service {
         )) {
             warnx("failed to append activation failure args");
             dbus_message_unref(ret);
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             return false;
         }
         if (!dbus_message_set_destination(ret, ACTIVATOR_DEST)) {
             warnx("failed set failure destination");
             dbus_message_unref(ret);
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             return false;
         }
         if (!dbus_connection_send(pend.conn, ret, nullptr)) {
             warnx("failed to send activation failure");
             dbus_message_unref(ret);
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             return false;
         }
-        drop_pending(pend);
+        pending_msgs.drop(pend);
         return true;
     }
 
@@ -1715,7 +1851,7 @@ struct manager_activate_service {
 
         if (ret < 0) {
             dinitctl_abort(sctl, errno);
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             return;
         }
 
@@ -1731,7 +1867,7 @@ struct manager_activate_service {
                 break;
             case DINITCTL_ERROR_SERVICE_ALREADY:
                 /* actually success, end here as there is nothing else to do */
-                drop_pending(pend);
+                pending_msgs.drop(pend);
                 return;
             default:
                 reason = "Unknown error (start)";
@@ -1753,7 +1889,7 @@ struct manager_activate_service {
 
         if (ret < 0) {
             dinitctl_abort(sctl, errno);
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             return;
         }
 
@@ -1787,7 +1923,7 @@ struct manager_activate_service {
         ) < 0) {
             /* we control the inputs so this is never recoverable */
             warn("dinitctl_start_service_async");
-            drop_pending(pend);
+            pending_msgs.drop(pend);
             dinitctl_abort(sctl, EBADMSG);
         }
     }
@@ -1801,19 +1937,22 @@ struct manager_activate_service {
             return false;
         }
 
-        auto &pend = add_pending(conn, msg);
-        pend.data = const_cast<char *>(service_name);
-        pend.is_signal = TRUE;
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+        pend->data = const_cast<char *>(service_name);
+        pend->is_signal = TRUE;
 
         int ret = dinitctl_load_service_async(
-            ctl, service_name, false, load_cb, &pend
+            ctl, service_name, false, load_cb, pend
         );
         if (ret < 0) {
             if (errno == EINVAL) {
-                return issue_failure(pend, "Service name too long");
+                return issue_failure(*pend, "Service name too long");
             }
             warn("dinitctl_load_service_async");
-            drop_pending(pend);
+            pending_msgs.drop(*pend);
             return false;
         }
 
@@ -1828,13 +1967,16 @@ static void dinit_event_cb(
     dinitctl_service_status const *status,
     void *
 ) {
-    auto it = pending_msgs.before_begin();
-    for (auto pit = it++; it != pending_msgs.end(); pit = it++) {
-        if (it->handle != handle) {
+    auto *pp = pending_msgs.begin();
+    pending_msg *prevp = nullptr;
+    while (pp) {
+        if (pp->handle != handle) {
+            prevp = pp;
+            pp = pp->next;
             continue;
         }
         /* event is for activation signal */
-        if (it->is_signal) {
+        if (pp->is_signal) {
             /* emit possible activation failure here */
             char const *reason = nullptr;
             switch (event) {
@@ -1865,11 +2007,11 @@ static void dinit_event_cb(
                     break;
             }
             if (reason) {
-                if (!manager_activate_service::issue_failure(*it, reason)) {
+                if (!manager_activate_service::issue_failure(*pp, reason)) {
                     dinitctl_abort(sctl, EBADMSG);
                 }
             } else {
-                pending_msgs.erase_after(pit);
+                pending_msgs.drop_at(prevp, *pp);
             }
             break;
         }
@@ -1877,7 +2019,7 @@ static void dinit_event_cb(
             int(event), service_event_str, sizeof(service_event_str), nullptr
         );
         if (!estr) {
-            pending_msgs.erase_after(pit);
+            pending_msgs.drop_at(prevp, *pp);
             break;
         }
         /* emit the signal here */
@@ -1885,12 +2027,12 @@ static void dinit_event_cb(
             BUS_OBJ, BUS_IFACE, "ServiceEvent"
         );
         if (!ret) {
-            pending_msgs.erase_after(pit);
+            pending_msgs.drop_at(prevp, *pp);
             warnx("could not create service event signal");
             dinitctl_abort(sctl, EBADMSG);
             break;
         }
-        dbus_uint32_t ser = dbus_message_get_serial(it->msg);
+        dbus_uint32_t ser = dbus_message_get_serial(pp->msg);
         DBusMessageIter iter, siter;
         dbus_message_iter_init_append(ret, &iter);
         if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_UINT32, &ser)) {
@@ -1912,16 +2054,16 @@ static void dinit_event_cb(
             dbus_message_iter_abandon_container(&iter, &siter);
             goto container_err;
         }
-        if (!dbus_connection_send(it->conn, ret, nullptr)) {
-            pending_msgs.erase_after(pit);
+        if (!dbus_connection_send(pp->conn, ret, nullptr)) {
+            pending_msgs.drop_at(prevp, *pp);
             warnx("could not send event signal");
             dinitctl_abort(sctl, EBADMSG);
             break;
         }
-        pending_msgs.erase_after(pit);
+        pending_msgs.drop_at(prevp, *pp);
         break;
 container_err:
-        pending_msgs.erase_after(pit);
+        pending_msgs.drop_at(prevp, *pp);
         warnx("could not build event aguments");
         dinitctl_abort(sctl, EBADMSG);
         break;
@@ -2005,6 +2147,9 @@ static int dbus_main(DBusConnection *conn) {
         DBusConnection *conn, DBusMessage *msg, void *datap
     ) -> DBusHandlerResult {
         if (!dbus_message_is_signal(msg, ACTIVATOR_IFACE, ACTIVATOR_SIGNAL)) {
+            return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+        }
+        if (!dbus_message_has_path(msg, ACTIVATOR_TARGET)) {
             return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
         }
         bool *success = static_cast<bool *>(datap);
@@ -2193,6 +2338,9 @@ int main(int argc, char **argv) {
     watches.reserve(4);
     timers.reserve(4);
     fds.reserve(16);
+    if (!pending_msgs.reserve_chunk()) {
+        err(1, "out of memory");
+    }
 
     for (int c; (c = getopt(argc, argv, "a:f:hS:s")) > 0;) {
         switch (c) {
