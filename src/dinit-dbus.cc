@@ -1845,6 +1845,7 @@ static void dinit_event_cb(
                                 reason = "Service startup failed (unknown)";
                                 break;
                         }
+                        break;
                     case DINITCTL_SERVICE_EVENT_START_CANCELED:
                         reason = "Service startup canceled";
                         break;
