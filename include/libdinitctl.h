@@ -367,8 +367,10 @@ DINITCTL_API int dinitctl_dispatch(dinitctl *ctl, int timeout, bool *ops_left);
  *
  * @param ctl The dinitctl.
  * @param errno The errno.
+ *
+ * @return Usually true, false if invoked from outside of dinitctl callback.
  */
-DINITCTL_API void dinitctl_abort(dinitctl *ctl, int errnov);
+DINITCTL_API bool dinitctl_abort(dinitctl *ctl, int errnov);
 
 /** @brief Set the service event callback.
  *

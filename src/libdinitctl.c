@@ -473,8 +473,12 @@ add_event:
     return ops;
 }
 
-DINITCTL_API void dinitctl_abort(dinitctl *ctl, int errnov) {
+DINITCTL_API bool dinitctl_abort(dinitctl *ctl, int errnov) {
+    if (!ctl->op_queue) {
+        return false;
+    }
     ctl->op_queue->errnov = errnov;
+    return true;
 }
 
 static bool bleed_queue(dinitctl *ctl) {
