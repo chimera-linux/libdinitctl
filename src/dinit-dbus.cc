@@ -43,7 +43,6 @@
 #include <cassert>
 #include <ctime>
 #include <vector>
-#include <forward_list>
 #include <string>
 #include <utility>
 #include <new>
