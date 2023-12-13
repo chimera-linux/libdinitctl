@@ -1,10 +1,8 @@
 /*
  * A control interface for dinit on D-Bus.
  *
- * This is basically dinitctl, but implemented as a D-Bus object.
- * It provides an interface that can be used from other applications.
- * It's meant to run as a long-running daemon launched as a dinit
- * service, typically with pass-cs-fd.
+ * This implements an equivalent of the C API on the bus. It's meant
+ * t run as a daemon launched from a dinit service (with pass-cs-fd).
  *
  * SPDX-License-Identifier: BSD-2-Clause
  *
