@@ -64,9 +64,16 @@ It implements the following methods:
 * `SetServiceTrigger(in s name, in b trigger)`
 * `SignalService(in s name, in s signal)`
 * `ListServices(out a(sssssa{sb}ui) list)`
-* `SetEnvironment(in s env_var)`
+* `SetEnvironment(in as env_vars)`
 * `Shutdown(in s type)`
 * `QueryServiceDirs(out as list)`
+
+Notably, the `SetEnvironment` differs from `dinitctl_setenv` in that it can
+take multiple environment variables (it will chain multiple protocol messages)
+and that it requires the input strings to always be in the format `NAME=VALUE`
+(because the invocation happens from a different process than the caller's).
+The first failed setenv will raise the D-Bus error, i.e. everything up until
+the failed one will be set.
 
 And the following signals:
 

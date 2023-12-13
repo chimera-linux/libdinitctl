@@ -471,7 +471,8 @@ struct pending_msg {
     dinitctl_service_handle *handle2 = nullptr;
     pending_msg *next = nullptr;
     void *data;
-    int type;
+    char **darray = nullptr;
+    int type, idx;
     dbus_bool_t reload, pin, gentle, remove, enable, is_signal = FALSE;
 
     pending_msg():
@@ -483,6 +484,9 @@ struct pending_msg {
     pending_msg(pending_msg const &) = delete;
     pending_msg(pending_msg &&v) = delete;
     ~pending_msg() {
+        if (darray) {
+            dbus_free_string_array(darray);
+        }
         if (msg) {
             dbus_message_unref(msg);
         }
@@ -1642,12 +1646,43 @@ container_err:
 };
 
 struct manager_set_env {
+    static bool setenv_async(
+        dinitctl *ctl, char const *env, dinitctl_async_cb cb, void *data
+    ) {
+        /* over dbus one must always supply value */
+        if (!std::strchr(env, '=')) {
+            errno = EINVAL;
+            return false;
+        }
+        return (dinitctl_setenv_async(ctl, env, cb, data) >= 0);
+    }
+
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_setenv_finish(sctl);
         if (!check_error(sctl, pend, ret)) {
             return;
         }
+        if (pend.idx < pend.type) {
+            /* send the next one */
+            if (setenv_async(sctl, pend.darray[++pend.idx], async_cb, data)) {
+                /* success, take over from next cb */
+                return;
+            }
+            /* error here */
+            if (errno == EINVAL) {
+                if (!msg_send_error(
+                    pend.conn, pend.msg, DBUS_ERROR_INVALID_ARGS, nullptr
+                )) {
+                    dinitctl_abort(sctl, EBADMSG);
+                }
+            } else {
+                dinitctl_abort(sctl, errno);
+            }
+            pending_msgs.drop(pend);
+            return;
+        }
+        /* final reply */
         DBusMessage *retm = msg_new_reply(sctl, pend);
         if (!retm) {
             return;
@@ -1658,19 +1693,45 @@ struct manager_set_env {
     }
 
     static bool invoke(DBusConnection *conn, DBusMessage *msg) {
-        char const *envs;
+        char **envs = nullptr;
+        int nenvs;
 
-        if (!msg_get_args(msg, DBUS_TYPE_STRING, &envs)) {
+        if (!msg_get_args(
+            msg, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING, &envs, &nenvs
+        )) {
             return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+        }
+
+        if (nenvs == 0) {
+            /* reply right away */
+            if (dbus_message_get_no_reply(msg)) {
+                dbus_free_string_array(envs);
+                return true;
+            }
+            DBusMessage *retm = dbus_message_new_method_return(msg);
+            if (!retm) {
+                warnx("could not build method reply");
+                dbus_free_string_array(envs);
+                return false;
+            }
+            if (!dbus_connection_send(conn, retm, nullptr)) {
+                warnx("dbus_connection_send failed");
+                dbus_free_string_array(envs);
+                return false;
+            }
+            dbus_message_unref(retm);
+            return true;
         }
 
         auto *pend = pending_msgs.add(conn, msg);
         if (!pend) {
+            dbus_free_string_array(envs);
             return false;
         }
-        pend->data = const_cast<char *>(envs);
-        int ret = dinitctl_setenv_async(ctl, envs, async_cb, pend);
-        if (ret < 0) {
+        pend->darray = envs;
+        pend->type = nenvs;
+        pend->idx = 0;
+        if (!setenv_async(ctl, envs[0], async_cb, pend)) {
             if (errno == EINVAL) {
                 pending_msgs.drop(*pend);
                 return msg_send_error(
