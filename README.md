@@ -81,13 +81,13 @@ And the following signals:
 
 The `Activator` interface provides two signals:
 
-* `Activate(s name)`
+* `ActivationRequest(s name)`
 * `ActivationFailure(s name, s error, s message)`
 
-The daemon will subscribe to the `Activate` signal on `/org/freedesktop/DBus`
-with destination `org.chimera.dinit`, interface `org.chimera.dinit.Activator`.
-The bus controller may then emit it, which will make `dinit-dbus` activate
-the service. Its sole argument is the service name.
+The daemon will subscribe to the `ActivationRequest` signal on
+`/org/freedesktop/DBus` with destination `org.chimera.dinit`, interface
+`org.chimera.dinit.Activator`. The bus controller may then emit it, which will
+make `dinit-dbus` activate the service. Its sole argument is the service name.
 
 In case of activation failure, the `ActivationFailure` signal will be emitted
 on the `/org/chimera/dinit` object. It takes the service name, the error name,

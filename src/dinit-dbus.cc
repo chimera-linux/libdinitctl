@@ -74,7 +74,7 @@
 #define ACTIVATOR_DEST BUS_NAME
 #endif
 #define ACTIVATOR_IFACE BUS_NAME ".Activator"
-#define ACTIVATOR_SIGNAL "Activate"
+#define ACTIVATOR_SIGNAL "ActivationRequest"
 #define ACTIVATOR_FAILURE "ActivationFailure"
 #define ACTIVATOR_ERROR BUS_ERROR_NS ACTIVATOR_FAILURE
 
