@@ -5,7 +5,7 @@ manager (https://github.com/davmac314/dinit). It's designed to map closely
 to the protocol, while offering a high-level API that can easily integrate
 into different event loops and is bindable.
 
-Needs dinit f28ab8c656afa9dcb5a61d5cd4b91f1b43760c3a or newer (protocol v4).
+Needs dinit 0.18.0 or newer (protocol v4).
 
 ## Building
 
