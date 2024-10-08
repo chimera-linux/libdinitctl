@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <poll.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <assert.h>
@@ -185,9 +186,11 @@ static void queue_op(dinitctl *ctl, struct dinitctl_op *op) {
     ctl->op_last = op;
 }
 
-static inline size_t status_buffer_size(void) {
+static inline size_t status_buffer_size(int pver) {
     size_t bsize = 6;
-    if (sizeof(pid_t) > sizeof(int)) {
+    if (pver > 4) {
+        bsize += 2 * sizeof(int);
+    } else if (sizeof(pid_t) > sizeof(int)) {
         bsize += sizeof(pid_t);
     } else {
         bsize += sizeof(int);
@@ -197,7 +200,8 @@ static inline size_t status_buffer_size(void) {
 
 static void fill_status(
     char *buf,
-    dinitctl_service_status *sbuf
+    dinitctl_service_status *sbuf,
+    int pver
 ) {
     uint16_t stage;
 
@@ -207,6 +211,7 @@ static void fill_status(
     sbuf->stop_reason = *buf++;
     /* default other fields */
     sbuf->exec_stage = 0;
+    sbuf->exit_code = 0;
     sbuf->exit_status = 0;
     sbuf->pid = 0;
 
@@ -219,35 +224,120 @@ static void fill_status(
     } else {
         if (sbuf->stop_reason == DINITCTL_SERVICE_STOP_REASON_EXEC_FAILED) {
             sbuf->exec_stage = stage;
+            memcpy(&sbuf->exit_code, buf, sizeof(sbuf->exit_code));
+            return;
+        }
+        if (pver > 4) {
+            memcpy(&sbuf->exit_code, buf, sizeof(sbuf->exit_code));
+            buf += sizeof(sbuf->exit_code);
         }
         memcpy(&sbuf->exit_status, buf, sizeof(sbuf->exit_status));
+        if (pver < 5) {
+            /* emulate for old protocol versions or systems without support */
+            if (WIFEXITED(sbuf->exit_status)) {
+                sbuf->exit_code = CLD_EXITED;
+                sbuf->exit_status = WEXITSTATUS(sbuf->exit_status);
+            } else if (WIFSIGNALED(sbuf->exit_status)) {
+                sbuf->exit_code = CLD_KILLED;
+                sbuf->exit_status = WTERMSIG(sbuf->exit_status);
+            } else {
+                sbuf->exit_code = CLD_DUMPED;
+            }
+        }
     }
 }
 
 static int event_check(dinitctl *ctl) {
-    if (ctl->read_buf[0] == DINIT_IP_SERVICEEVENT) {
-        size_t reqsz = status_buffer_size() + sizeof(uint32_t) + 2;
-        char psz = ctl->read_buf[1];
-        /* ensure the packet will provide enough data */
-        if (psz < (int)reqsz) {
-            return -1;
+    int svcpv = -1;
+    switch (ctl->read_buf[0]) {
+        case DINIT_IP_SERVICEEVENT5:
+            svcpv = 5;
+            break;
+        case DINIT_IP_SERVICEEVENT:
+            svcpv = 4;
+            break;
+        case DINIT_IP_ENVEVENT: {
+            /* non-standard (variable) size but subscribe-only */
+            uint16_t elen;
+            size_t reqsz = 3 + sizeof(elen);
+            /* we don't have a callback yet got the event? that's bad */
+            if (!ctl->env_event_cb) {
+                return -1;
+            }
+            /* don't have enough stuff yet to know the protocol packet */
+            if (ctl->read_size < 2) {
+                return 1;
+            }
+            /* make sure the packet will provide enough data */
+            if (ctl->read_buf[1] != (int)reqsz) {
+                return -1;
+            }
+            /* now we have enough to know the proper length... */
+            memcpy(&elen, &ctl->read_buf[3], sizeof(elen));
+            /* wait for the full packet */
+            return (ctl->read_size < (reqsz + elen));
         }
-        /* wait until we've gotten the handle */
-        if (ctl->read_size < (sizeof(uint32_t) + 2)) {
-            return 1;
-        }
-        if (handle_check(ctl, &ctl->read_buf[2]) < 0) {
-            return -1;
-        }
-        /* wait for full packet */
-        return (ctl->read_size < (size_t)psz);
     }
-    return -1;
+    if (svcpv < 0) {
+        /* unknown event, still handle it, generically... */
+        return (
+            (ctl->read_size < 2) ||
+            (ctl->read_size < (size_t)ctl->read_buf[1])
+        );
+    }
+    /* this is a service event */
+    size_t reqsz = status_buffer_size(svcpv) + sizeof(uint32_t) + 3;
+    /* packet size is yet unknown */
+    if (ctl->read_size < 2) {
+        return 1;
+    }
+    /* make sure the packet will provide enough data */
+    if (ctl->read_buf[1] != (int)reqsz) {
+        return -1;
+    }
+    /* wait until we have a handle */
+    if (ctl->read_size < (sizeof(uint32_t) + 2)) {
+        return 1;
+    }
+    /* handle check for validity */
+    if (handle_check(ctl, &ctl->read_buf[2]) < 0) {
+        return -1;
+    }
+    /* wait for full packet */
+    return (ctl->read_size < reqsz);
 }
 
 static void event_cb(dinitctl *ctl, void *data) {
+    int svcpv = -1;
     (void)data;
-    if (ctl->sv_event_cb) {
+
+    switch (ctl->read_buf[0]) {
+        case DINIT_IP_SERVICEEVENT:
+            if (!ctl->got_svevent5) {
+                /* only set if we're not already handling SERVICEEVENT5 */
+                svcpv = 4;
+            }
+            break;
+        case DINIT_IP_SERVICEEVENT5:
+            /* if we got one, ignore the old style ones */
+            ctl->got_svevent5 = 1;
+            svcpv = 5;
+            break;
+        case DINIT_IP_ENVEVENT: {
+            /* we've already checked everything */
+            uint16_t elen;
+            memcpy(&elen, &ctl->read_buf[3], sizeof(elen));
+            ctl->env_event_cb(
+                ctl, &ctl->read_buf[3 + sizeof(elen)], ctl->read_buf[2],
+                ctl->env_event_data
+            );
+            /* envevent is special size */
+            consume_recvbuf(ctl, 3 + sizeof(elen) + elen);
+            return;
+        }
+    }
+    /* handle a service event */
+    if (svcpv > 0) {
         char *buf = &ctl->read_buf[2];
         uint32_t handle;
         dinitctl_service_status sbuf;
@@ -255,12 +345,14 @@ static void event_cb(dinitctl *ctl, void *data) {
         memcpy(&handle, buf, sizeof(handle));
         buf += sizeof(handle);
         sv_event = *buf++;
-        fill_status(buf, &sbuf);
+        fill_status(buf, &sbuf, svcpv);
         ctl->sv_event_cb(
             ctl, handle_find(ctl, handle), sv_event, &sbuf, ctl->sv_event_data
         );
     }
+    /* consume the whole event */
     consume_recvbuf(ctl, ctl->read_buf[1]);
+    return;
 }
 
 DINITCTL_API int dinitctl_dispatch(dinitctl *ctl, int timeout, bool *ops_left) {
@@ -437,7 +529,7 @@ add_event:
             }
             return chk;
         }
-        if (chk > 0) {
+        if (chk == 1) {
             /* pending */
             if (closed) {
                 errno = EPIPE;
@@ -448,15 +540,17 @@ add_event:
         /* good */
         op->do_cb(ctl, op->do_data);
         ++ops;
-        /* move on to next operation */
-        ctl->op_queue = op->next;
-        /* are we last? if so, drop that too */
-        if (op == ctl->op_last) {
-            ctl->op_last = NULL;
+        if (chk < 2) {
+            /* move on to next operation */
+            ctl->op_queue = op->next;
+            /* are we last? if so, drop that too */
+            if (op == ctl->op_last) {
+                ctl->op_last = NULL;
+            }
+            /* free up the operation for reuse */
+            op->next = ctl->op_avail;
+            ctl->op_avail = op;
         }
-        /* free up the operation for reuse */
-        op->next = ctl->op_avail;
-        ctl->op_avail = op;
         /* return early if needed */
         if (op->errnov) {
             errno = op->errnov;
@@ -596,6 +690,8 @@ static int version_check(dinitctl *ctl) {
         errno = ENOTSUP;
         return -1;
     }
+    ctl->cp_ver = cp_ver;
+    ctl->got_svevent5 = 0;
 
     return 0;
 }
@@ -611,7 +707,7 @@ static void version_cb(dinitctl *ctl, void *data) {
 DINITCTL_API dinitctl *dinitctl_open_fd(int fd) {
     dinitctl *ctl;
     struct dinitctl_op *qop;
-    int cvret, flags;
+    int cvret = 0, flags;
 
     if (!fd) {
         errno = EBADF;
@@ -654,6 +750,8 @@ DINITCTL_API dinitctl *dinitctl_open_fd(int fd) {
     ctl->op_queue = ctl->op_last = ctl->op_avail = NULL;
     ctl->sv_event_cb = NULL;
     ctl->sv_event_data = NULL;
+    ctl->env_event_cb = NULL;
+    ctl->env_event_data = NULL;
     for (size_t i = 0; i < (sizeof(ctl->hndl_map) / sizeof(void *)); ++i) {
         ctl->hndl_map[i] = NULL;
     }
@@ -716,11 +814,54 @@ DINITCTL_API int dinitctl_get_fd(dinitctl *ctl) {
     return ctl->fd;
 }
 
-DINITCTL_API void dinitctl_set_service_event_callback(
+DINITCTL_API int dinitctl_set_service_event_callback(
     dinitctl *ctl, dinitctl_service_event_cb cb, void *data
 ) {
     ctl->sv_event_cb = cb;
     ctl->sv_event_data = data;
+    return 0;
+}
+
+static int env_check(dinitctl *ctl) {
+    if (ctl->read_buf[0] == DINIT_RP_ACK) {
+        return 0;
+    } else {
+        return -1;
+    }
+}
+
+static void env_cb(dinitctl *ctl, void *data) {
+    (void)data;
+    consume_recvbuf(ctl, 1);
+}
+
+DINITCTL_API int dinitctl_set_env_event_callback(
+    dinitctl *ctl, dinitctl_env_event_cb cb, void *data
+) {
+    struct dinitctl_op *qop;
+
+     /* before readying, query version */
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+    *reserve_sendbuf(ctl, 1, true) = DINIT_CP_LISTENENV;
+
+    qop->check_cb = &env_check;
+    qop->do_cb = &env_cb;
+    qop->do_data = NULL;
+
+    queue_op(ctl, qop);
+
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+
+    /* set the callback last... */
+    ctl->env_event_cb = cb;
+    ctl->env_event_data = data;
+
+    return 0;
 }
 
 struct load_service_ret {
@@ -1014,7 +1155,7 @@ DINITCTL_API int dinitctl_close_service_handle_finish(dinitctl *ctl) {
 }
 
 static void start_cb(dinitctl *ctl, void *data) {
-    *((int *)data) = dinitctl_start_service_finish(ctl);
+    *((int *)data) = dinitctl_start_service_finish(ctl, NULL);
 }
 
 DINITCTL_API int dinitctl_start_service(
@@ -1022,7 +1163,7 @@ DINITCTL_API int dinitctl_start_service(
 ) {
     int ret;
     if (dinitctl_start_service_async(
-        ctl, handle, pin, &start_cb, &ret
+        ctl, handle, pin, false, &start_cb, &ret
     ) < 0) {
         return -1;
     }
@@ -1039,6 +1180,8 @@ static int start_check(dinitctl *ctl) {
         case DINIT_RP_PINNEDSTOPPED:
         case DINIT_RP_ALREADYSS:
             return 0;
+        case DINIT_RP_PREACK:
+            return 2;
     }
     return -1;
 }
@@ -1047,6 +1190,7 @@ DINITCTL_API int dinitctl_start_service_async(
     dinitctl *ctl,
     dinitctl_service_handle *handle,
     bool pin,
+    bool preack,
     dinitctl_async_cb cb,
     void *data
 ) {
@@ -1069,6 +1213,9 @@ DINITCTL_API int dinitctl_start_service_async(
 
     buf[0] = DINIT_CP_STARTSERVICE;
     buf[1] = pin ? 1 : 0;
+    if (preack) {
+        buf[1] |= (1 << 7);
+    }
     memcpy(&buf[2], &handle->idx, sizeof(handle->idx));
 
     qop->check_cb = &start_check;
@@ -1080,8 +1227,13 @@ DINITCTL_API int dinitctl_start_service_async(
     return 0;
 }
 
-DINITCTL_API int dinitctl_start_service_finish(dinitctl *ctl) {
+DINITCTL_API int dinitctl_start_service_finish(dinitctl *ctl, bool *preack) {
+    if (preack) {
+        *preack = (ctl->read_buf[0] == DINIT_RP_PREACK);
+    }
     switch (ctl->read_buf[0]) {
+        case DINIT_RP_PREACK:
+            break;
         case DINIT_RP_SHUTTINGDOWN:
             return consume_enum(ctl, DINITCTL_ERROR_SHUTTING_DOWN);
         case DINIT_RP_PINNEDSTOPPED:
@@ -1095,7 +1247,7 @@ DINITCTL_API int dinitctl_start_service_finish(dinitctl *ctl) {
 }
 
 static void stop_cb(dinitctl *ctl, void *data) {
-    *((int *)data) = dinitctl_stop_service_finish(ctl);
+    *((int *)data) = dinitctl_stop_service_finish(ctl, NULL);
 }
 
 DINITCTL_API int dinitctl_stop_service(
@@ -1107,7 +1259,7 @@ DINITCTL_API int dinitctl_stop_service(
 ) {
     int ret;
     if (dinitctl_stop_service_async(
-        ctl, handle, pin, restart, gentle, &stop_cb, &ret
+        ctl, handle, pin, restart, gentle, false, &stop_cb, &ret
     ) < 0) {
         return -1;
     }
@@ -1130,6 +1282,8 @@ static int stop_check(dinitctl *ctl) {
                 return 0;
             }
             break;
+        case DINIT_RP_PREACK:
+            return 2;
     }
     return -1;
 }
@@ -1140,6 +1294,7 @@ DINITCTL_API int dinitctl_stop_service_async(
     bool pin,
     bool restart,
     bool gentle,
+    bool preack,
     dinitctl_async_cb cb,
     void *data
 ) {
@@ -1168,6 +1323,9 @@ DINITCTL_API int dinitctl_stop_service_async(
     if (restart) {
         buf[1] |= (1 << 2);
     }
+    if (preack) {
+        buf[1] |= (1 << 7);
+    }
     memcpy(&buf[2], &handle->idx, sizeof(handle->idx));
 
     qop->check_cb = &stop_check;
@@ -1180,8 +1338,13 @@ DINITCTL_API int dinitctl_stop_service_async(
     return 0;
 }
 
-DINITCTL_API int dinitctl_stop_service_finish(dinitctl *ctl) {
+DINITCTL_API int dinitctl_stop_service_finish(dinitctl *ctl, bool *preack) {
+    if (preack) {
+        *preack = (ctl->read_buf[0] == DINIT_RP_PREACK);
+    }
     switch (ctl->read_buf[0]) {
+        case DINIT_RP_PREACK:
+            break;
         case DINIT_RP_SHUTTINGDOWN:
             return consume_enum(ctl, DINITCTL_ERROR_SHUTTING_DOWN);
         case DINIT_RP_PINNEDSTARTED:
@@ -1199,7 +1362,7 @@ DINITCTL_API int dinitctl_stop_service_finish(dinitctl *ctl) {
 }
 
 static void wake_cb(dinitctl *ctl, void *data) {
-    *((int *)data) = dinitctl_wake_service_finish(ctl);
+    *((int *)data) = dinitctl_wake_service_finish(ctl, NULL);
 }
 
 DINITCTL_API int dinitctl_wake_service(
@@ -1207,7 +1370,7 @@ DINITCTL_API int dinitctl_wake_service(
 ) {
     int ret;
     if (dinitctl_wake_service_async(
-        ctl, handle, pin, &wake_cb, &ret
+        ctl, handle, pin, false, &wake_cb, &ret
     ) < 0) {
         return -1;
     }
@@ -1225,6 +1388,8 @@ static int wake_check(dinitctl *ctl) {
         case DINIT_RP_ALREADYSS:
         case DINIT_RP_NAK:
             return 0;
+        case DINIT_RP_PREACK:
+            return 2;
     }
     return -1;
 }
@@ -1233,6 +1398,7 @@ DINITCTL_API int dinitctl_wake_service_async(
     dinitctl *ctl,
     dinitctl_service_handle *handle,
     bool pin,
+    bool preack,
     dinitctl_async_cb cb,
     void *data
 ) {
@@ -1255,6 +1421,9 @@ DINITCTL_API int dinitctl_wake_service_async(
 
     buf[0] = DINIT_CP_WAKESERVICE;
     buf[1] = pin ? 1 : 0;
+    if (preack) {
+        buf[1] |= (1 << 7);
+    }
     memcpy(&buf[2], &handle->idx, sizeof(handle->idx));
 
     qop->check_cb = &wake_check;
@@ -1266,8 +1435,13 @@ DINITCTL_API int dinitctl_wake_service_async(
     return 0;
 }
 
-DINITCTL_API int dinitctl_wake_service_finish(dinitctl *ctl) {
+DINITCTL_API int dinitctl_wake_service_finish(dinitctl *ctl, bool *preack) {
+    if (preack) {
+        *preack = (ctl->read_buf[0] == DINIT_RP_PREACK);
+    }
     switch (ctl->read_buf[0]) {
+        case DINIT_RP_PREACK:
+            break;
         case DINIT_RP_SHUTTINGDOWN:
             return consume_enum(ctl, DINITCTL_ERROR_SHUTTING_DOWN);
         case DINIT_RP_PINNEDSTOPPED:
@@ -1283,7 +1457,7 @@ DINITCTL_API int dinitctl_wake_service_finish(dinitctl *ctl) {
 }
 
 static void release_cb(dinitctl *ctl, void *data) {
-    *((int *)data) = dinitctl_release_service_finish(ctl);
+    *((int *)data) = dinitctl_release_service_finish(ctl, NULL);
 }
 
 DINITCTL_API int dinitctl_release_service(
@@ -1291,7 +1465,7 @@ DINITCTL_API int dinitctl_release_service(
 ) {
     int ret;
     if (dinitctl_release_service_async(
-        ctl, handle, pin, &release_cb, &ret
+        ctl, handle, pin, false, &release_cb, &ret
     ) < 0) {
         return -1;
     }
@@ -1306,6 +1480,8 @@ static int release_check(dinitctl *ctl) {
         case DINIT_RP_ACK:
         case DINIT_RP_ALREADYSS:
             return 0;
+        case DINIT_RP_PREACK:
+            return 2;
     }
     return -1;
 }
@@ -1314,6 +1490,7 @@ DINITCTL_API int dinitctl_release_service_async(
     dinitctl *ctl,
     dinitctl_service_handle *handle,
     bool pin,
+    bool preack,
     dinitctl_async_cb cb,
     void *data
 ) {
@@ -1336,6 +1513,9 @@ DINITCTL_API int dinitctl_release_service_async(
 
     buf[0] = DINIT_CP_RELEASESERVICE;
     buf[1] = pin ? 1 : 0;
+    if (preack) {
+        buf[1] |= (1 << 7);
+    }
     memcpy(&buf[2], &handle->idx, sizeof(handle->idx));
 
     qop->check_cb = &release_check;
@@ -1347,7 +1527,10 @@ DINITCTL_API int dinitctl_release_service_async(
     return 0;
 }
 
-DINITCTL_API int dinitctl_release_service_finish(dinitctl *ctl) {
+DINITCTL_API int dinitctl_release_service_finish(dinitctl *ctl, bool *preack) {
+    if (preack) {
+        *preack = (ctl->read_buf[0] == DINIT_RP_PREACK);
+    }
     if (ctl->read_buf[0] == DINIT_RP_ALREADYSS) {
         return consume_enum(ctl, DINITCTL_ERROR_SERVICE_ALREADY);
     }
@@ -1851,7 +2034,7 @@ static int get_service_status_check(dinitctl *ctl) {
         case DINIT_RP_NAK:
             return 0;
         case DINIT_RP_SERVICESTATUS: {
-            return (ctl->read_size < (status_buffer_size() + 2));
+            return (ctl->read_size < (status_buffer_size(ctl->cp_ver) + 2));
         }
         default:
             break;
@@ -1882,7 +2065,7 @@ DINITCTL_API int dinitctl_get_service_status_async(
         return -1;
     }
 
-    buf[0] = DINIT_CP_SERVICESTATUS;
+    buf[0] = (ctl->cp_ver < 5) ? DINIT_CP_SERVICESTATUS : DINIT_CP_SERVICESTATUS5;
     memcpy(&buf[1], &handle->idx, sizeof(handle->idx));
 
     qop->check_cb = &get_service_status_check;
@@ -1901,8 +2084,8 @@ DINITCTL_API int dinitctl_get_service_status_finish(
     if (ctl->read_buf[0] == DINIT_RP_NAK) {
         return consume_enum(ctl, DINITCTL_ERROR);
     }
-    fill_status(ctl->read_buf + 2, status);
-    consume_recvbuf(ctl, status_buffer_size() + 2);
+    fill_status(ctl->read_buf + 2, status, ctl->cp_ver);
+    consume_recvbuf(ctl, status_buffer_size(ctl->cp_ver) + 2);
     return DINITCTL_SUCCESS;
 }
 
@@ -2201,7 +2384,7 @@ static int list_services_check(dinitctl *ctl) {
             return -1;
     }
     /* now count the entries */
-    sbufs = status_buffer_size();
+    sbufs = status_buffer_size(ctl->cp_ver);
     rsize = ctl->read_size;
     rbuf = ctl->read_buf;
     for (;;) {
@@ -2252,7 +2435,7 @@ DINITCTL_API int dinitctl_list_services_async(
         return -1;
     }
 
-    buf[0] = DINIT_CP_LISTSERVICES;
+    buf[0] = (ctl->cp_ver < 5) ? DINIT_CP_LISTSERVICES : DINIT_CP_LISTSERVICES5;
 
     qop->check_cb = &list_services_check;
     qop->do_cb = cb;
@@ -2279,7 +2462,7 @@ DINITCTL_API int dinitctl_list_services_finish(
     }
 
     /* otherwise count them for allocation purposes */
-    sbufs = status_buffer_size();
+    sbufs = status_buffer_size(ctl->cp_ver);
     nentries = 0;
     wentries = 0;
 
@@ -2302,7 +2485,7 @@ DINITCTL_API int dinitctl_list_services_finish(
         ++nentries;
         /* if we're writing, write it */
         if (wentries) {
-            fill_status(&buf[2], &curentry->status);
+            fill_status(&buf[2], &curentry->status, ctl->cp_ver);
             memcpy(curentry->name, &buf[2 + sbufs], namlen);
             curentry->name[namlen] = '\0';
             ++curentry;
@@ -2344,7 +2527,7 @@ DINITCTL_API int dinitctl_list_services_finish(
         } else {
             namlen = rnlen;
         }
-        fill_status(&buf[2], &curentry->status);
+        fill_status(&buf[2], &curentry->status, ctl->cp_ver);
         memcpy(curentry->name, &buf[2 + sbufs], namlen);
         curentry->name[namlen] = '\0';
         ++curentry;
@@ -2442,6 +2625,163 @@ DINITCTL_API int dinitctl_setenv_async(
 
 DINITCTL_API int dinitctl_setenv_finish(dinitctl *ctl) {
     return consume_enum(ctl, DINITCTL_SUCCESS);
+}
+
+static void unsetenv_cb(dinitctl *ctl, void *data) {
+    *((int *)data) = dinitctl_unsetenv_finish(ctl);
+}
+
+DINITCTL_API int dinitctl_unsetenv(dinitctl *ctl, char const *env_var) {
+    int ret;
+    if (dinitctl_unsetenv_async(ctl, env_var, &unsetenv_cb, &ret) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return ret;
+}
+
+static int unsetenv_check(dinitctl *ctl) {
+    if (ctl->read_buf[0] == DINIT_RP_ACK) {
+        return 0;
+    }
+    return -1;
+}
+
+DINITCTL_API int dinitctl_unsetenv_async(
+    dinitctl *ctl, char const *env_var, dinitctl_async_cb cb, void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+    size_t varlen = strlen(env_var);
+    uint16_t vlen;
+
+    if (!varlen || strchr(env_var, '=') || (varlen > 1021)) {
+        errno = EINVAL;
+        return -1;
+    }
+    vlen = (uint16_t)varlen;
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, vlen + sizeof(vlen) + 1, true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = DINIT_CP_SETENV;
+    memcpy(&buf[1], &vlen, sizeof(vlen));
+    memcpy(&buf[1 + sizeof(vlen)], env_var, varlen);
+
+    qop->check_cb = &unsetenv_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_unsetenv_finish(dinitctl *ctl) {
+    return consume_enum(ctl, DINITCTL_SUCCESS);
+}
+
+struct get_all_env_ret {
+    char **out;
+    size_t *bsize;
+    int ret;
+};
+
+static void get_all_env_cb(dinitctl *ctl, void *data) {
+    struct get_all_env_ret *rp = data;
+    rp->ret = dinitctl_get_all_env_finish(ctl, rp->out, rp->bsize);
+}
+
+DINITCTL_API int dinitctl_get_all_env(dinitctl *ctl, char **vars, size_t *bsize) {
+    struct get_all_env_ret rp;
+    rp.out = vars;
+    rp.bsize = bsize;
+    if (dinitctl_get_all_env_async(ctl, &get_all_env_cb, &rp) < 0) {
+        return -1;
+    }
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+    return rp.ret;
+}
+
+static int get_all_env_check(dinitctl *ctl) {
+    if (ctl->read_buf[0] != DINIT_RP_ALLENV) {
+        return -1;
+    }
+    if (ctl->read_size < (sizeof(size_t) + 1)) {
+        /* don't know the size yet */
+        return 1;
+    }
+    size_t elen;
+    memcpy(&elen, &ctl->read_buf[1], sizeof(elen));
+    /* require more stuff as long as we don't have the full env */
+    return (ctl->read_size < (elen + sizeof(size_t) + 1));
+}
+
+DINITCTL_API int dinitctl_get_all_env_async(
+    dinitctl *ctl, dinitctl_async_cb cb, void *data
+) {
+    char *buf;
+    struct dinitctl_op *qop;
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+
+    buf = reserve_sendbuf(ctl, 2, true);
+    if (!buf) {
+        return -1;
+    }
+
+    buf[0] = DINIT_CP_GETALLENV;
+    buf[1] = 0;
+
+    qop->check_cb = &get_all_env_check;
+    qop->do_cb = cb;
+    qop->do_data = data;
+
+    queue_op(ctl, qop);
+
+    return 0;
+}
+
+DINITCTL_API int dinitctl_get_all_env_finish(dinitctl *ctl, char **vars, size_t *bsize) {
+    int ret = DINITCTL_SUCCESS;
+    size_t repn;
+    char *buf = ctl->read_buf + 1;
+    uint32_t psize;
+
+    memcpy(&repn, buf, sizeof(repn));
+    buf += sizeof(repn);
+
+    if (bsize) {
+        *bsize = repn;
+    }
+    psize = repn + sizeof(repn) + 1;
+
+    if (vars) {
+        *vars = malloc(repn);
+        if (!*vars) {
+            ret = -1;
+            goto do_ret;
+        }
+        memcpy(*vars, buf, repn);
+    }
+
+do_ret:
+    consume_recvbuf(ctl, psize);
+    return ret;
 }
 
 static void shutdown_cb(dinitctl *ctl, void *data) {

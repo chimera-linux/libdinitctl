@@ -3,6 +3,7 @@
 #ifndef LIBDINITCTL_MESSAGES_H
 #define LIBDINITCTL_MESSAGES_H
 
+/* We will bump this to 5 as our new baseline as soon as it's out */
 #define DINIT_PROTOCOLVER 4
 
 /* Query protocol version */
@@ -69,6 +70,17 @@
 /* Close a service handle */
 #define DINIT_CP_CLOSEHANDLE 23
 
+/* Retrieve complete environment */
+#define DINIT_CP_GETALLENV 24
+
+/* List services (protocol 5+) */
+#define DINIT_CP_LISTSERVICES5 25
+
+/* Query status of an individual service (5+) */
+#define DINIT_CP_SERVICESTATUS5 26
+
+/* Start listening to environment events */
+#define DINIT_CP_LISTENENV 27
 
 /* Replies */
 
@@ -142,9 +154,25 @@
 /* Service description directory */
 #define DINIT_RP_SVCDSCDIR 77
 
+/* Retrieve complete environment */
+#define DINIT_RP_ALLENV 78
+
+/* Pre-acknowedgement - issued before main reply after restart command
+ * (to avoid race condition for client tracking service status)
+ */
+#define DINIT_RP_PREACK 79
+
 /* Information (out-of-band) */
 
 /* Service event occurred (4-byte service handle, 1 byte event code) */
 #define DINIT_IP_SERVICEEVENT 100
+
+/* Service event for protocol version 5+
+ * (4 byte handle, 1 byte event, proc_status_t status)
+ */
+#define DINIT_IP_SERVICEEVENT5 101
+
+/* Environment event; 2 bytes length + env string */
+#define DINIT_IP_ENVEVENT 102
 
 #endif

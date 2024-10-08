@@ -60,24 +60,28 @@ It implements the following methods:
 * `AddRemoveServiceDependency(in s from_name, in s to_name, in s type, in b remove, in b enable)`
 * `GetServiceDirectory(in s name, out s dir)`
 * `GetServiceLog(in s name, in b clear, out s log)`
-* `GetServiceStatus(in s name, out (ssssa{sb}ui) status)`
+* `GetServiceStatus(in s name, out (ssssa{sb}uii) status)`
 * `SetServiceTrigger(in s name, in b trigger)`
 * `SignalService(in s name, in s signal)`
 * `ListServices(out a(sssssa{sb}ui) list)`
 * `SetEnvironment(in as env_vars)`
+* `GetAllEnvironment(out as list)`
 * `Shutdown(in s type)`
 * `QueryServiceDirs(out as list)`
 
 Notably, the `SetEnvironment` differs from `dinitctl_setenv` in that it can
 take multiple environment variables (it will chain multiple protocol messages)
 and that it requires the input strings to always be in the format `NAME=VALUE`
-(because the invocation happens from a different process than the caller's).
-The first failed setenv will raise the D-Bus error, i.e. everything up until
-the failed one will be set.
+to set the variables, with just `NAME` unsetting them (because the invocation
+happens from a different process than the caller's). A mix of setting and
+unsetting is permitted.
+The first failed (un)setenv will raise the D-Bus error, i.e. everything up
+until the failed one will be (un)set.
 
 And the following signals:
 
-* `ServiceEvent(u eventid, s event, (ssssa{sb}ui) status)`
+* `ServiceEvent(u eventid, s event, (ssssa{sb}uii) status)`
+* `EnvironmentEvent(s env, b overridden)`
 
 The `Activator` interface provides two signals:
 
@@ -176,7 +180,7 @@ Currently available keys are:
 * `is_marked_active`
 * `has_pid`
 
-The service status is a struct with the signature `(ssssa{sb}ui)`. The
+The service status is a struct with the signature `(ssssa{sb}uii)`. The
 fields here are:
 
 * service state
@@ -185,7 +189,8 @@ fields here are:
 * service exec stage
 * flags dict
 * PID
-* and the exit status
+* exit code
+* and exit status
 
 For `ListServices`, the output is an array of structs. This array matches
 the the status struct, except it also has an additional member (service name)

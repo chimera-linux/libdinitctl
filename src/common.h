@@ -34,6 +34,9 @@ struct dinitctl {
     /* service event callback */
     dinitctl_service_event_cb sv_event_cb;
     void *sv_event_data;
+    /* environment event callback */
+    dinitctl_env_event_cb env_event_cb;
+    void *env_event_data;
     /* linked list of queued operations */
     struct dinitctl_op *op_queue;
     struct dinitctl_op *op_last;
@@ -51,6 +54,9 @@ struct dinitctl {
     size_t write_cap;
     /* file descriptor of the dinitctl connection */
     int fd;
+    /* control protocol version */
+    int cp_ver;
+    int got_svevent5;
 };
 
 #endif

@@ -175,6 +175,10 @@ enum dinitctl_log_buffer_flag {
     DINITCTL_LOG_BUFFER_CLEAR = 1 << 0, /** Clear the log buffer. */
 };
 
+enum dinitctl_env_flag {
+    DINITCTL_ENV_OVERRIDDEN = 1 << 0, /** The variable existed before the event. */
+};
+
 /** @brief Service status.
  *
  * This structure contains all the known information about dinit
@@ -190,8 +194,12 @@ enum dinitctl_log_buffer_flag {
  * services. The flags are bitwise-ORed. PID will be set for services
  * that have it (see flags), stop_reason will be set for stopped services
  * only, and exec_stage will be set for services whose execution failed.
- * For those, exit_status will be an errno value. For other stopped services,
- * exit_status will be the exit status code of the process.
+ * For those, exit_code will be an errno value and exit_status will be
+ * unset. For other stopped services, exit_status will be the exit status
+ * code of the process or the signal that killed it and exit_code will be
+ * one of the CLD_ values, and may be zero (CLD_EXITED and CLD_KILLED are
+ * guaranteed for exit and signal respectively, CLD_DUMPED may be set
+ * when the reason is unknown and the exec has not failed).
  */
 typedef struct dinitctl_service_status {
     pid_t pid; /**< The service PID. */
@@ -200,7 +208,8 @@ typedef struct dinitctl_service_status {
     enum dinitctl_service_stop_reason stop_reason; /**< The dinitctl_service_stop_reason. */
     enum dinitctl_service_exec_stage exec_stage; /**< The dinitctl_service_exec_stage. */
     int flags; /**< Any dinitctl_service_flags. */
-    int exit_status; /**< Exit code or errno, depending on stop_reason. */
+    int exit_code; /**< One of the CLD_ values or errno. */
+    int exit_status; /**< Exit status code or signal of the process or zero. */
 } dinitctl_service_status;
 
 /** @brief Service list entry.
@@ -236,6 +245,21 @@ typedef void (*dinitctl_service_event_cb)(
     dinitctl_service_handle *handle,
     enum dinitctl_service_event service_event,
     dinitctl_service_status const *status,
+    void *data
+);
+
+/** @brief Environment event callback.
+ *
+ * The API makes it possible to subscribe to environment events.
+ * This is invoked whenever an environment variable changes in the
+ * global activation environment of the service manager.
+ *
+ * One environment callback is permitted per connection.
+ */
+typedef void (*dinitctl_env_event_cb)(
+    dinitctl *ctl,
+    char const *env,
+    int flags,
     void *data
 );
 
@@ -376,9 +400,20 @@ DINITCTL_API bool dinitctl_abort(dinitctl *ctl, int errnov);
  *
  * Sets the callback to be invoked upon reception of service events.
  *
- * This API cannot fail.
+ * This API currently cannot fail, so it always returns 0. You should
+ * not rely on that, however.
  */
-DINITCTL_API void dinitctl_set_service_event_callback(dinitctl *ctl, dinitctl_service_event_cb cb, void *data);
+DINITCTL_API int dinitctl_set_service_event_callback(dinitctl *ctl, dinitctl_service_event_cb cb, void *data);
+
+/** @brief Set the environment event callback.
+ *
+ * Sets the callback to be invoked upon reception of environment changes.
+ *
+ * This API invokes a synchronous protocol message, so you should generally
+ * call it early in your startup. It may fail if the protocol message ends
+ * up malformed. It may also fail with ENOMEM.
+ */
+DINITCTL_API int dinitctl_set_env_event_callback(dinitctl *ctl, dinitctl_env_event_cb cb, void *data);
 
 /** @brief Find or load a service by name.
  *
@@ -539,17 +574,23 @@ DINITCTL_API int dinitctl_start_service(dinitctl *ctl, dinitctl_service_handle *
  * activation mark can be removed, via stop or release). The pin is
  * however removed upon failed startup.
  *
+ * With preack mode, the callback will be issued twice. You can check
+ * which one by checking the finish argument. This is mainly useful
+ * together with service events to figure out which events were issued
+ * after this request.
+ *
  * May fail with EINVAL or ENOMEM.
  *
  * @param ctl The dinitctl.
  * @param handle The service handle.
  * @param pin Whether to pin the service started.
  * @param cb The callback.
+ * @param preack Whether to set the preack flag.
  * @param data The data to tpass to the callback.
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_start_service_async(dinitctl *ctl, dinitctl_service_handle *handle, bool pin, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_start_service_async(dinitctl *ctl, dinitctl_service_handle *handle, bool pin, bool preack, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the startup request.
  *
@@ -561,6 +602,9 @@ DINITCTL_API int dinitctl_start_service_async(dinitctl *ctl, dinitctl_service_ha
  * callback dinitctl_set_service_event_callback() and watch for the
  * requested state on the handle.
  *
+ * The preack value will be set (unless NULL) depending on whether this
+ * is the first or second callback call.
+ *
  * May fail with DINITCTL_ERROR_SHUTTING_DOWN (service set is already being
  * shut down), DINITCTL_ERROR_SERVICE_PINNED (service is pinned stopped) or
  * maybe DINITCTL_ERROR_SERVICE_ALREADY (service is already started). May not
@@ -570,7 +614,7 @@ DINITCTL_API int dinitctl_start_service_async(dinitctl *ctl, dinitctl_service_ha
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_start_service_finish(dinitctl *ctl);
+DINITCTL_API int dinitctl_start_service_finish(dinitctl *ctl, bool *preack);
 
 /** @brief Try stopping a service.
  *
@@ -596,6 +640,11 @@ DINITCTL_API int dinitctl_stop_service(dinitctl *ctl, dinitctl_service_handle *h
  * and any specified pin value will be ignored. If gentle is specified,
  * the stop will fail if there are running hard dependents.
  *
+ * With preack mode, the callback will be issued twice. You can check
+ * which one by checking the finish argument. This is mainly useful
+ * together with service events to figure out which events were issued
+ * after this request.
+ *
  * May fail with EINVAL or with ENOMEM.
  *
  * @param ctl The dinitctl.
@@ -603,12 +652,13 @@ DINITCTL_API int dinitctl_stop_service(dinitctl *ctl, dinitctl_service_handle *h
  * @param pin Whether to pin the service stopped.
  * @param restart Whether to restart the service.
  * @param gentle Whether to check dependents first.
+ * @param preack Whether to set the preack flag.
  * @param cb The callback.
  * @param data The data to tpass to the callback.
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_stop_service_async(dinitctl *ctl, dinitctl_service_handle *handle, bool pin, bool restart, bool gentle, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_stop_service_async(dinitctl *ctl, dinitctl_service_handle *handle, bool pin, bool restart, bool gentle, bool preack, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the stop request.
  *
@@ -628,11 +678,14 @@ DINITCTL_API int dinitctl_stop_service_async(dinitctl *ctl, dinitctl_service_han
  * fail with DINITCTL_ERROR if the restart request failed. May not fail
  * unrecoverably.
  *
+ * The preack value will be set (unless NULL) depending on whether this
+ * is the first or second callback call.
+ *
  * @param ctl The dinitctl.
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_stop_service_finish(dinitctl *ctl);
+DINITCTL_API int dinitctl_stop_service_finish(dinitctl *ctl, bool *preack);
 
 /** @brief Try waking a service.
  *
@@ -655,17 +708,23 @@ DINITCTL_API int dinitctl_wake_service(dinitctl *ctl, dinitctl_service_handle *h
  *
  * If a pin is specified, it will be pinned started.
  *
+ * With preack mode, the callback will be issued twice. You can check
+ * which one by checking the finish argument. This is mainly useful
+ * together with service events to figure out which events were issued
+ * after this request.
+ *
  * May fail with EINVAL or ENOMEM.
  *
  * @param ctl The dinitctl.
  * @param handle The service handle.
  * @param pin Whether to pin the service started.
+ * @param preack Whether to set the preack flag.
  * @param cb The callback.
  * @param data The data to tpass to the callback.
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_wake_service_async(dinitctl *ctl, dinitctl_service_handle *handle, bool pin, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_wake_service_async(dinitctl *ctl, dinitctl_service_handle *handle, bool pin, bool preack, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the wake request.
  *
@@ -683,11 +742,14 @@ DINITCTL_API int dinitctl_wake_service_async(dinitctl *ctl, dinitctl_service_han
  * fail with DINITCTL_ERROR if no dependent that would wake it is found. May
  * not fail unrecoverably.
  *
+ * The preack value will be set (unless NULL) depending on whether this
+ * is the first or second callback call.
+ *
  * @param ctl The dinitctl.
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_wake_service_finish(dinitctl *ctl);
+DINITCTL_API int dinitctl_wake_service_finish(dinitctl *ctl, bool *preack);
 
 /** @brief Try releasing a service.
  *
@@ -708,17 +770,23 @@ DINITCTL_API int dinitctl_release_service(dinitctl *ctl, dinitctl_service_handle
  * Otherwise, it will stop as soon as dependents stop. If a pin is
  * specified, the service will be pinned stopped.
  *
+ * With preack mode, the callback will be issued twice. You can check
+ * which one by checking the finish argument. This is mainly useful
+ * together with service events to figure out which events were issued
+ * after this request.
+ *
  * May fail with EINVAL or ENOMEM.
  *
  * @param ctl The dinitctl.
  * @param handle The service handle.
  * @param pin Whether to pin the service stopped.
+ * @param preack Whether to set the preack flag.
  * @param cb The callback.
  * @param data The data to tpass to the callback.
  *
  * @return 0 on success, negative value on error.
  */
-DINITCTL_API int dinitctl_release_service_async(dinitctl *ctl, dinitctl_service_handle *handle, bool pin, dinitctl_async_cb cb, void *data);
+DINITCTL_API int dinitctl_release_service_async(dinitctl *ctl, dinitctl_service_handle *handle, bool pin, bool preack, dinitctl_async_cb cb, void *data);
 
 /** @brief Finish the release request.
  *
@@ -733,11 +801,14 @@ DINITCTL_API int dinitctl_release_service_async(dinitctl *ctl, dinitctl_service_
  * May fail with DINITCTL_ERROR_SERVICE_ALREADY (service is already started).
  * May not fail unrecoverably.
  *
+ * The preack value will be set (unless NULL) depending on whether this
+ * is the first or second callback call.
+ *
  * @param ctl The dinitctl.
  *
  * @return Zero on success or a positive or negative error code.
  */
-DINITCTL_API int dinitctl_release_service_finish(dinitctl *ctl);
+DINITCTL_API int dinitctl_release_service_finish(dinitctl *ctl, bool *preack);
 
 /** @brief Remove start/stop service pins.
  *
@@ -1240,6 +1311,92 @@ DINITCTL_API int dinitctl_setenv_async(dinitctl *ctl, char const *env_var, dinit
  * @return Zero.
  */
 DINITCTL_API int dinitctl_setenv_finish(dinitctl *ctl);
+
+/** @brief Unset an environment variable in the dinit environment.
+ *
+ * Synchronous variant of dinitctl_unsetenv_async().
+ *
+ * @param ctl The dinitctl.
+ * @param env_var The env var to unset.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_unsetenv(dinitctl *ctl, char const *env_var);
+
+/** @brief Unset an environment variable in the dinit environment.
+ *
+ * This unsets an environment variable in the dinit activation environment.
+ * The variable name must not contain an equals (`=`) sign. Unsetting vars
+ * that do not exist is not an error.
+ *
+ * This API may only fail with EINVAL if the input value is too long or has
+ * an invalid format, or with ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param env_var The env var to unset.
+ * @param cb The callback.
+ * @param data The data to pass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_unsetenv_async(dinitctl *ctl, char const *env_var, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish unsetting the env var.
+ *
+ * Invoked from the callback to dinitctl_unsetenv_async().
+ *
+ * This call may not fail.
+ *
+ * @param ctl The dinitctl.
+ *
+ * @return Zero.
+ */
+DINITCTL_API int dinitctl_unsetenv_finish(dinitctl *ctl);
+
+/** @brief Get the whole global activation environment of dinit.
+ *
+ * Synchronous variant of dinitctl_get_all_env_async().
+ *
+ * @param ctl The dinitctl.
+ * @param[out] vars The environment variable block.
+ * @param[out] bsize The size of the environment variable block.
+ *
+ * @return Zero on success or a positive or negative error code.
+ */
+DINITCTL_API int dinitctl_get_all_env(dinitctl *ctl, char **vars, size_t *bsize);
+
+/** @brief Get the whole global activation environment of dinit.
+ *
+ * This gets all environment variables dinit activates services with.
+ *
+ * This API may only fail with ENOMEM.
+ *
+ * @param ctl The dinitctl.
+ * @param cb The callback.
+ * @param data The data to pass to the callback.
+ *
+ * @return 0 on success, negative value on error.
+ */
+DINITCTL_API int dinitctl_get_all_env_async(dinitctl *ctl, dinitctl_async_cb cb, void *data);
+
+/** @brief Finish getting the environment.
+ *
+ * Invoked from the callback to dinitctl_get_all_env_async().
+ *
+ * Both output arguments are optional. If `vars` is not supplied, this call
+ * may not fail. Otherwise, it may fail with ENOMEM. The output is a string
+ * of environment variables, each variable terminated with a zero. The `bsize`
+ * is the total size of the string.
+ *
+ * The resulting string must be freed with free().
+ *
+ * @param ctl The dinitctl.
+ * @param[out] vars The environment variable block.
+ * @param[out] bsize The size of the environment variable block.
+ *
+ * @return Zero on success or non-zero on failure.
+ */
+DINITCTL_API int dinitctl_get_all_env_finish(dinitctl *ctl, char **vars, size_t *bsize);
 
 /** @brief Shut down dinit and maybe system.
  *

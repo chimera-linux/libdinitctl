@@ -754,7 +754,7 @@ struct manager_unload_service {
 struct manager_start_service {
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
-        int ret = dinitctl_start_service_finish(sctl);
+        int ret = dinitctl_start_service_finish(sctl, NULL);
         if (!check_error(sctl, pend, ret)) {
             return;
         }
@@ -783,7 +783,7 @@ struct manager_start_service {
         }
         pend.handle = handle;
         if (dinitctl_start_service_async(
-            ctl, handle, pend.pin, async_cb, &pend
+            ctl, handle, pend.pin, false, async_cb, &pend
         ) < 0) {
             warn("dinitctl_start_service_async");
             pending_msgs.drop(pend);
@@ -814,7 +814,7 @@ struct manager_start_service {
 struct manager_stop_service {
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
-        int ret = dinitctl_stop_service_finish(sctl);
+        int ret = dinitctl_stop_service_finish(sctl, NULL);
         if (!check_error(sctl, pend, ret)) {
             return;
         }
@@ -843,7 +843,7 @@ struct manager_stop_service {
         }
         pend.handle = handle;
         if (dinitctl_stop_service_async(
-            ctl, handle, pend.pin, pend.reload, pend.gentle, async_cb, &pend
+            ctl, handle, pend.pin, pend.reload, pend.gentle, false, async_cb, &pend
         ) < 0) {
             warn("dinitctl_stop_service_async");
             pending_msgs.drop(pend);
@@ -880,7 +880,7 @@ struct manager_stop_service {
 struct manager_wake_service {
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
-        int ret = dinitctl_wake_service_finish(sctl);
+        int ret = dinitctl_wake_service_finish(sctl, NULL);
         if (!check_error(sctl, pend, ret)) {
             return;
         }
@@ -909,7 +909,7 @@ struct manager_wake_service {
         }
         pend.handle = handle;
         if (dinitctl_wake_service_async(
-            ctl, handle, pend.pin, async_cb, &pend
+            ctl, handle, pend.pin, false, async_cb, &pend
         ) < 0) {
             warn("dinitctl_wake_service_async");
             pending_msgs.drop(pend);
@@ -940,7 +940,7 @@ struct manager_wake_service {
 struct manager_release_service {
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
-        int ret = dinitctl_release_service_finish(sctl);
+        int ret = dinitctl_release_service_finish(sctl, NULL);
         if (!check_error(sctl, pend, ret)) {
             return;
         }
@@ -969,7 +969,7 @@ struct manager_release_service {
         }
         pend.handle = handle;
         if (dinitctl_release_service_async(
-            ctl, handle, pend.pin, async_cb, &pend
+            ctl, handle, pend.pin, false, async_cb, &pend
         ) < 0) {
             warn("dinitctl_release_service_async");
             pending_msgs.drop(pend);
@@ -1255,7 +1255,7 @@ static bool append_status(
 ) {
     DBusMessageIter aiter;
     char const *str;
-    dbus_int32_t estatus;
+    dbus_int32_t estatus, ecode;
     dbus_uint32_t pid;
 
     auto append_flag = [&aiter](char const *key, int flags, int flag) {
@@ -1358,6 +1358,10 @@ static bool append_status(
     }
     pid = dbus_uint32_t(status.pid);
     if (!dbus_message_iter_append_basic(iter, DBUS_TYPE_UINT32, &pid)) {
+        return false;
+    }
+    ecode = dbus_int32_t(status.exit_code);
+    if (!dbus_message_iter_append_basic(iter, DBUS_TYPE_INT32, &ecode)) {
         return false;
     }
     estatus = dbus_int32_t(status.exit_status);
@@ -1581,6 +1585,7 @@ struct manager_list_services {
                 DBUS_DICT_ENTRY_END_CHAR_AS_STRING
                 DBUS_TYPE_UINT32_AS_STRING
                 DBUS_TYPE_INT32_AS_STRING
+                DBUS_TYPE_INT32_AS_STRING
             DBUS_STRUCT_END_CHAR_AS_STRING,
             &aiter
         )) {
@@ -1651,14 +1656,14 @@ struct manager_set_env {
     ) {
         /* over dbus one must always supply value */
         if (!std::strchr(env, '=')) {
-            errno = EINVAL;
-            return false;
+            return (dinitctl_unsetenv_async(ctl, env, cb, data) >= 0);
         }
         return (dinitctl_setenv_async(ctl, env, cb, data) >= 0);
     }
 
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
+        /* same underlying message, simplify things for ourselves... */
         int ret = dinitctl_setenv_finish(sctl);
         if (!check_error(sctl, pend, ret)) {
             return;
@@ -1739,6 +1744,72 @@ struct manager_set_env {
                 );
             }
             warn("dinitctl_setenv_async");
+            pending_msgs.drop(*pend);
+            dinitctl_abort(ctl, EBADMSG);
+            return false;
+        }
+        return true;
+    }
+};
+
+struct manager_get_all_env {
+    static void async_cb(dinitctl *sctl, void *data) {
+        size_t bsize;
+        char *vars;
+        auto &pend = *static_cast<pending_msg *>(data);
+        int ret = dinitctl_get_all_env_finish(sctl, &vars, &bsize);
+        if (!check_error(sctl, pend, ret)) {
+            return;
+        }
+        DBusMessage *retm = msg_new_reply(sctl, pend);
+        if (!retm) {
+            std::free(vars);
+            return;
+        }
+        DBusMessageIter iter, aiter;
+        dbus_message_iter_init_append(retm, &iter);
+        if (!dbus_message_iter_open_container(
+            &iter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING, &aiter
+        )) {
+            goto container_err;
+        }
+        for (char *curvar = vars; bsize;) {
+            if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &curvar)) {
+                goto container_err;
+            }
+            auto slen = std::strlen(curvar);
+            curvar += slen + 1;
+            bsize -= slen + 1;
+        }
+        if (!dbus_message_iter_close_container(&iter, &aiter)) {
+            dbus_message_iter_abandon_container(&iter, &aiter);
+            goto container_err;
+        }
+        if (send_reply(sctl, pend, retm)) {
+            std::free(vars);
+            pending_msgs.drop(pend);
+        }
+        return;
+container_err:
+        dbus_message_iter_abandon_container(&iter, &aiter);
+        std::free(vars);
+        pending_msgs.drop(pend);
+        warnx("could not initialize reply container");
+        dinitctl_abort(sctl, EBADMSG);
+    }
+
+    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+        if (!msg_get_args(msg)) {
+            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+        }
+
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+        int ret = dinitctl_get_all_env_async(ctl, async_cb, pend);
+        if (ret < 0) {
+            warn("dinitctl_get_all_env_async");
             pending_msgs.drop(*pend);
             dinitctl_abort(ctl, EBADMSG);
             return false;
@@ -1905,7 +1976,7 @@ struct manager_activate_service {
 
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
-        int ret = dinitctl_start_service_finish(sctl);
+        int ret = dinitctl_start_service_finish(sctl, NULL);
 
         if (ret < 0) {
             dinitctl_abort(sctl, errno);
@@ -1977,7 +2048,7 @@ struct manager_activate_service {
 
         pend.handle = handle;
         if (dinitctl_start_service_async(
-            ctl, handle, false, async_cb, &pend
+            ctl, handle, false, false, async_cb, &pend
         ) < 0) {
             /* we control the inputs so this is never recoverable */
             warn("dinitctl_start_service_async");
@@ -2018,7 +2089,7 @@ struct manager_activate_service {
     }
 };
 
-static void dinit_event_cb(
+static void dinit_sv_event_cb(
     dinitctl *sctl,
     dinitctl_service_handle *handle,
     dinitctl_service_event event,
@@ -2128,6 +2199,42 @@ container_err:
     }
 }
 
+static void dinit_env_event_cb(
+    dinitctl *sctl,
+    char const *env,
+    int flags,
+    void *data
+) {
+    auto *conn = static_cast<DBusConnection *>(data);
+    /* emit the signal here */
+    DBusMessage *ret = dbus_message_new_signal(
+        BUS_OBJ, BUS_IFACE, "EnvironmentEvent"
+    );
+    if (!ret) {
+        warnx("could not create environment event signal");
+        dinitctl_abort(sctl, EBADMSG);
+        return;
+    }
+    dbus_bool_t over = (flags != 0);
+    DBusMessageIter iter;
+    dbus_message_iter_init_append(ret, &iter);
+    if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &env)) {
+        goto container_err;
+    }
+    if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_BOOLEAN, &over)) {
+        goto container_err;
+    }
+    if (!dbus_connection_send(conn, ret, nullptr)) {
+        warnx("could not send event signal");
+        dinitctl_abort(sctl, EBADMSG);
+    }
+    return;
+container_err:
+    warnx("could not build event aguments");
+    dinitctl_abort(sctl, EBADMSG);
+    return;
+}
+
 static bool manager_method_call(
     DBusConnection *conn, DBusMessage *msg, char const *memb
 ) {
@@ -2159,6 +2266,8 @@ static bool manager_method_call(
         return manager_list_services::invoke(conn, msg);
     } else if (!std::strcmp(memb, "SetEnvironment")) {
         return manager_set_env::invoke(conn, msg);
+    } else if (!std::strcmp(memb, "GetAllEnvironment")) {
+        return manager_get_all_env::invoke(conn, msg);
     } else if (!std::strcmp(memb, "Shutdown")) {
         return manager_shutdown::invoke(conn, msg);
     } else if (!std::strcmp(memb, "QueryServiceDirs")) {
@@ -2177,6 +2286,10 @@ static int dbus_main(DBusConnection *conn) {
     int pret = -1;
     bool term = false;
     bool success = true;
+
+    if (dinitctl_set_env_event_callback(ctl, dinit_env_event_cb, conn) < 0) {
+        err(1, "failed to set environment callback");
+    }
 
     dbus_connection_set_exit_on_disconnect(conn, FALSE);
 
@@ -2468,7 +2581,9 @@ int main(int argc, char **argv) {
         err(1, "failed to set up dinitctl");
     }
 
-    dinitctl_set_service_event_callback(ctl, dinit_event_cb, nullptr);
+    if (dinitctl_set_service_event_callback(ctl, dinit_sv_event_cb, nullptr) < 0) {
+        err(1, "failed to set event callback");
+    }
 
     /* signal pipe */
     if (pipe(sigpipe) < 0) {
