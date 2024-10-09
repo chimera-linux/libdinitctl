@@ -24,6 +24,11 @@
 #include <assert.h>
 #include <pwd.h>
 
+#ifdef __linux__
+#include <sys/vfs.h>
+#include <linux/magic.h>
+#endif
+
 #include "config.h"
 
 #include "common.h"
@@ -730,6 +735,7 @@ DINITCTL_API dinitctl *dinitctl_open_fd(int fd) {
         return NULL;
     }
     ctl->fd = fd;
+    ctl->tmp_fd = -1;
     /* processing buffers */
     ctl->read_buf = malloc(CTLBUF_SIZE);
     if (!ctl->read_buf) {
@@ -788,6 +794,7 @@ DINITCTL_API dinitctl *dinitctl_open_fd(int fd) {
 DINITCTL_API void dinitctl_close(dinitctl *ctl) {
     /* then close the associated stuff */
     close(ctl->fd);
+    close(ctl->tmp_fd);
     free(ctl->read_buf);
     free(ctl->write_buf);
     /* free handle management stuff */
@@ -840,7 +847,6 @@ DINITCTL_API int dinitctl_set_env_event_callback(
 ) {
     struct dinitctl_op *qop;
 
-     /* before readying, query version */
     qop = new_op(ctl);
     if (!qop) {
         return -1;
@@ -862,6 +868,192 @@ DINITCTL_API int dinitctl_set_env_event_callback(
     ctl->env_event_data = data;
 
     return 0;
+}
+
+static int edir_check(dinitctl *ctl) {
+    switch (ctl->read_buf[0]) {
+        case DINIT_RP_LOADER_MECH:
+        case DINIT_RP_NAK:
+            return 0;
+        case DINIT_RP_ACK: {
+            uint32_t psize;
+            if (ctl->read_size < (sizeof(psize) + 2)) {
+                return 1;
+            }
+            memcpy(&psize, &ctl->read_buf[2], sizeof(psize));
+            return (ctl->read_size < psize);
+        }
+    }
+    return -1;
+}
+
+struct ephemeral_setup_ret {
+    int ret;
+};
+
+static int is_writable_dir_on_tmpfs(char const *path) {
+#ifdef __linux__
+    struct statfs buf;
+    int dfd;
+    for (;;) {
+        dfd = open(path, O_PATH | O_DIRECTORY | O_NOFOLLOW);
+        if (dfd < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        break;
+    }
+    for (;;) {
+        if (fstatfs(dfd, &buf) < 0) {
+            if (errno == EINTR) continue;
+            close(dfd);
+            return -1;
+        }
+        break;
+    }
+    /* not tmpfs */
+    if (buf.f_type != TMPFS_MAGIC) {
+        close(dfd);
+        return -1;
+    }
+    /* not writable */
+    if (faccessat(dfd, ".", W_OK, AT_SYMLINK_NOFOLLOW) != 0) {
+        close(dfd);
+        return -1;
+    }
+    return dfd;
+#else
+    (void)path;
+    return false;
+#endif
+}
+
+static void edir_cb(dinitctl *ctl, void *data) {
+    struct ephemeral_setup_ret *ret = data;
+    uint32_t psize, ndirs, slen;
+    char *buf, *bufp = NULL;
+    char ltype;
+    size_t plen = 0;
+
+    if (ctl->read_buf[0] == DINIT_RP_NAK) {
+        ret->ret = consume_enum(ctl, DINITCTL_ERROR);
+        return;
+    }
+
+    buf = ctl->read_buf + 1;
+
+    ltype = *buf++;
+    memcpy(&psize, buf, sizeof(psize));
+    buf += sizeof(psize);
+
+    /* SSET_TYPE_DIRLOAD */
+    if (ltype != 1) {
+        consume_recvbuf(ctl, psize);
+        return;
+    }
+
+    memcpy(&ndirs, buf, sizeof(ndirs));
+    buf += sizeof(ndirs);
+
+    if (ndirs <= 1) {
+        /* first one is working dir */
+        consume_recvbuf(ctl, psize);
+        return;
+    }
+
+    /* skip the working dir */
+    memcpy(&slen, buf, sizeof(slen));
+    buf += sizeof(slen);
+    buf += slen;
+
+    for (size_t nleft = ndirs; nleft; --nleft) {
+        int dfd;
+        memcpy(&slen, buf, sizeof(slen));
+        buf += sizeof(slen);
+
+        if (slen >= plen) {
+            void *nbuf;
+            plen = slen + ((nleft > 1) ? 256 : 1);
+            nbuf = realloc(bufp, plen);
+            if (!nbuf) {
+                ret->ret = -ENOMEM;
+                free(bufp);
+                consume_recvbuf(ctl, psize);
+                return;
+            }
+            bufp = nbuf;
+        }
+        memcpy(bufp, buf, slen);
+        bufp[slen] = '\0';
+        dfd = is_writable_dir_on_tmpfs(bufp);
+        if (dfd < 0) {
+            buf += slen;
+            continue;
+        }
+        /* we found one */
+        ctl->tmp_fd = dfd;
+        ret->ret = 0;
+        free(bufp);
+        consume_recvbuf(ctl, psize);
+        return;
+    }
+
+    free(bufp);
+    ret->ret = -ENOENT;
+    consume_recvbuf(ctl, psize);
+}
+
+DINITCTL_API int dinitctl_setup_ephemeral_directory(dinitctl *ctl) {
+    struct dinitctl_op *qop;
+    struct ephemeral_setup_ret ret;
+
+    qop = new_op(ctl);
+    if (!qop) {
+        return -1;
+    }
+    *reserve_sendbuf(ctl, 1, true) = DINIT_CP_QUERY_LOAD_MECH;
+
+    ret.ret = DINITCTL_ERROR;
+
+    qop->check_cb = &edir_check;
+    qop->do_cb = &edir_cb;
+    qop->do_data = &ret;
+
+    queue_op(ctl, qop);
+
+    if (!bleed_queue(ctl)) {
+        return -1;
+    }
+
+    if (ret.ret < 0) {
+        errno = -ret.ret;
+        return -1;
+    }
+    return ret.ret;
+}
+
+DINITCTL_API FILE *dinitctl_create_ephemeral_service(
+    dinitctl *ctl, char const *svcname
+) {
+    FILE *ret;
+    int fd;
+    if (ctl->tmp_fd < 0) {
+        errno = ENOENT;
+        return NULL;
+    }
+    errno = 0;
+    fd = openat(ctl->tmp_fd, svcname, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+    if (fd < 0) {
+        return NULL;
+    }
+    ret = fdopen(fd, "wb");
+    if (!ret) {
+        int serrno = errno;
+        close(fd);
+        errno = serrno;
+        return NULL;
+    }
+    return ret;
 }
 
 struct load_service_ret {
@@ -2880,6 +3072,7 @@ DINITCTL_API int dinitctl_query_service_dirs(
 static int dirs_check(dinitctl *ctl) {
     switch (ctl->read_buf[0]) {
         case DINIT_RP_LOADER_MECH:
+        case DINIT_RP_NAK:
             return 0;
         case DINIT_RP_ACK: {
             uint32_t psize;

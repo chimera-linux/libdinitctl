@@ -68,6 +68,7 @@ It implements the following methods:
 * `GetAllEnvironment(out as list)`
 * `Shutdown(in s type)`
 * `QueryServiceDirs(out as list)`
+* `CreateEphemeralService(in s name, in s contents)`
 
 Notably, the `SetEnvironment` differs from `dinitctl_setenv` in that it can
 take multiple environment variables (it will chain multiple protocol messages)

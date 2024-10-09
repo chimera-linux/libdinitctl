@@ -51,6 +51,7 @@ extern "C" {
 #define DINITCTL_API
 #endif
 
+#include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -414,6 +415,29 @@ DINITCTL_API int dinitctl_set_service_event_callback(dinitctl *ctl, dinitctl_ser
  * up malformed. It may also fail with ENOMEM.
  */
 DINITCTL_API int dinitctl_set_env_event_callback(dinitctl *ctl, dinitctl_env_event_cb cb, void *data);
+
+/** @brief Locate and open an ephemeral service directory.
+ *
+ * This performs a service directory lookup for the connected instance
+ * and finds a directory that exists, is writable, and on a temporary
+ * filesystem.
+ *
+ * Being unable to locate one will fail with a non-zero error code.
+ * One not being found sets errno to ENOENT. It may also fail with
+ * ENOMEM. Other errnos may be raised by intermediate calls. It
+ * may fail with recoverable protocol errors, in which case no errno
+ * will be raised.
+ */
+DINITCTL_API int dinitctl_setup_ephemeral_directory(dinitctl *ctl);
+
+/** @brief Create an ephemeral service.
+ *
+ * This functions opens the file for writing if it can. The ephemeral
+ * service directory must be previously set up, or it will fail.
+ *
+ * Upon failure this returns NULL and sets errno.
+ */
+DINITCTL_API FILE *dinitctl_create_ephemeral_service(dinitctl *ctl, char const *svcname);
 
 /** @brief Find or load a service by name.
  *

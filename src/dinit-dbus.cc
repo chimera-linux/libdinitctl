@@ -2089,6 +2089,62 @@ struct manager_activate_service {
     }
 };
 
+struct manager_create_ephemeral_service {
+    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+        char const *name;
+        char const *contents;
+        DBusMessage *retm;
+
+        if (!msg_get_args(
+            msg, DBUS_TYPE_STRING, &name, DBUS_TYPE_STRING, &contents
+        )) {
+            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+        }
+
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+
+        FILE *f = dinitctl_create_ephemeral_service(ctl, name);
+        if (!f) {
+            if (errno == ENOENT) {
+                if (msg_send_error(
+                    conn, msg, DBUS_ERROR_FILE_NOT_FOUND, nullptr
+                )) {
+                    pending_msgs.drop(*pend);
+                    return true;
+                }
+            }
+            pending_msgs.drop(*pend);
+            return false;
+        }
+
+        auto slen = std::strlen(contents);
+
+        if (fwrite(contents, 1, slen, f) != slen) {
+            if (msg_send_error(
+                conn, msg, DBUS_ERROR_IO_ERROR, nullptr
+            )) {
+                pending_msgs.drop(*pend);
+                return true;
+            }
+            pending_msgs.drop(*pend);
+            return false;
+        }
+
+        retm = msg_new_reply(ctl, *pend);
+        if (!retm) {
+            return false;
+        }
+        if (send_reply(ctl, *pend, retm)) {
+            pending_msgs.drop(*pend);
+            return false;
+        }
+        return true;
+    }
+};
+
 static void dinit_sv_event_cb(
     dinitctl *sctl,
     dinitctl_service_handle *handle,
@@ -2272,6 +2328,8 @@ static bool manager_method_call(
         return manager_shutdown::invoke(conn, msg);
     } else if (!std::strcmp(memb, "QueryServiceDirs")) {
         return manager_query_dirs::invoke(conn, msg);
+    } else if (!std::strcmp(memb, "CreateEphemeralService")) {
+        return manager_create_ephemeral_service::invoke(conn, msg);
     }
     /* unknown method */
     return msg_send_error(conn, msg, DBUS_ERROR_UNKNOWN_METHOD, nullptr);
@@ -2289,6 +2347,10 @@ static int dbus_main(DBusConnection *conn) {
 
     if (dinitctl_set_env_event_callback(ctl, dinit_env_event_cb, conn) < 0) {
         err(1, "failed to set environment callback");
+    }
+
+    if ((dinitctl_setup_ephemeral_directory(ctl) < 0) && (errno != ENOENT)) {
+        err(1, "failed to set up ephemeral service directory");
     }
 
     dbus_connection_set_exit_on_disconnect(conn, FALSE);

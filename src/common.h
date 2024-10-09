@@ -54,6 +54,8 @@ struct dinitctl {
     size_t write_cap;
     /* file descriptor of the dinitctl connection */
     int fd;
+    /* file descriptor for service tmpdir */
+    int tmp_fd;
     /* control protocol version */
     int cp_ver;
     int got_svevent5;
