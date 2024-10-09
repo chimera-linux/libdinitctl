@@ -3,8 +3,7 @@
 #ifndef LIBDINITCTL_MESSAGES_H
 #define LIBDINITCTL_MESSAGES_H
 
-/* We will bump this to 5 as our new baseline as soon as it's out */
-#define DINIT_PROTOCOLVER 4
+#define DINIT_PROTOCOLVER 5
 
 /* Query protocol version */
 #define DINIT_CP_QUERYVERSION 0
