@@ -1668,9 +1668,9 @@ struct manager_set_env {
         if (!check_error(sctl, pend, ret)) {
             return;
         }
-        if (pend.idx < pend.type) {
+        if (++pend.idx < pend.type) {
             /* send the next one */
-            if (setenv_async(sctl, pend.darray[++pend.idx], async_cb, data)) {
+            if (setenv_async(sctl, pend.darray[pend.idx], async_cb, data)) {
                 /* success, take over from next cb */
                 return;
             }
