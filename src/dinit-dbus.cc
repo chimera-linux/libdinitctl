@@ -2108,40 +2108,35 @@ struct manager_create_ephemeral_service {
 
         FILE *f = dinitctl_create_ephemeral_service(ctl, name);
         if (!f) {
+            bool ret = false;
             if (errno == ENOENT) {
-                if (msg_send_error(
+                ret = msg_send_error(
                     conn, msg, DBUS_ERROR_FILE_NOT_FOUND, nullptr
-                )) {
-                    pending_msgs.drop(*pend);
-                    return true;
-                }
+                );
             }
             pending_msgs.drop(*pend);
-            return false;
+            return ret;
         }
 
         auto slen = std::strlen(contents);
 
         if (fwrite(contents, 1, slen, f) != slen) {
-            if (msg_send_error(
+            bool ret = msg_send_error(
                 conn, msg, DBUS_ERROR_IO_ERROR, nullptr
-            )) {
-                pending_msgs.drop(*pend);
-                return true;
-            }
+            );
             pending_msgs.drop(*pend);
-            return false;
+            return ret;
         }
 
         retm = msg_new_reply(ctl, *pend);
         if (!retm) {
             return false;
         }
-        if (send_reply(ctl, *pend, retm)) {
+        bool ret = send_reply(ctl, *pend, retm);
+        if (ret) {
             pending_msgs.drop(*pend);
-            return false;
         }
-        return true;
+        return ret;
     }
 };
 
