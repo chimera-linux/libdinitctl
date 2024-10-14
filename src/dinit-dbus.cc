@@ -1726,7 +1726,7 @@ struct manager_query_dirs {
 };
 
 struct manager_activate_service {
-    static bool issue_failure(pending_msg &pend, char const *reason) {
+    static void issue_failure(pending_msg &pend, char const *reason) {
         DBusMessage *ret = dbus_message_new_signal(
             BUS_OBJ, ACTIVATOR_IFACE, ACTIVATOR_FAILURE
         );
@@ -1757,7 +1757,6 @@ struct manager_activate_service {
             throw std::bad_alloc{};
         }
         pending_msgs.drop(pend);
-        return true;
     }
 
     static void async_cb(dinitctl *sctl, void *data) {
@@ -1789,9 +1788,7 @@ struct manager_activate_service {
                 break;
         }
         if (reason) {
-            if (!issue_failure(pend, reason)) {
-                dinitctl_abort(sctl, EBADMSG);
-            }
+            issue_failure(pend, reason);
         }
         /* now we wait for a service event, do not reply now */
     }
@@ -1826,9 +1823,7 @@ struct manager_activate_service {
                 break;
         }
         if (reason) {
-            if (!issue_failure(pend, reason)) {
-                dinitctl_abort(sctl, EBADMSG);
-            }
+            issue_failure(pend, reason);
             return;
         }
 
@@ -1841,13 +1836,13 @@ struct manager_activate_service {
         }
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char const *service_name;
 
         /* we don't know the service name, so cannot emit failure signal */
         if (!msg_get_args(msg, DBUS_TYPE_STRING, &service_name)) {
-            warnx("could not get args for activation signal");
-            return false;
+            /* ignore malformed signal... */
+            return;
         }
 
         auto &pend = pending_msgs.add(conn, msg);
@@ -1859,12 +1854,11 @@ struct manager_activate_service {
         );
         if (ret < 0) {
             if (errno == EINVAL) {
-                return issue_failure(pend, "Service name too long");
+                issue_failure(pend, "Service name too long");
+                return;
             }
             throw std::bad_alloc{};
         }
-
-        return true;
     }
 };
 
@@ -1984,9 +1978,7 @@ static void dinit_sv_event_cb(
                     break;
             }
             if (reason) {
-                if (!manager_activate_service::issue_failure(*pp, reason)) {
-                    dinitctl_abort(sctl, EBADMSG);
-                }
+                manager_activate_service::issue_failure(*pp, reason);
             } else {
                 pending_msgs.drop_at(prevp, *pp);
             }
@@ -2430,9 +2422,7 @@ int main(int argc, char **argv) {
         }
         bool *success = static_cast<bool *>(datap);
         /* try activating the service, don't expect reply */
-        if (!manager_activate_service::invoke(conn, msg)) {
-            *success = false;
-        }
+        manager_activate_service::invoke(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     };
 
