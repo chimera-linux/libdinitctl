@@ -2738,8 +2738,14 @@ int main(int argc, char **argv) {
         );
     }
 
-    /* run the main loop */
-    dbus_main(conn, success);
+    int ret = 0;
+
+    /* run the main loop; simplify out-of-memory scenarios */
+    try {
+        dbus_main(conn, success);
+    } catch (std::bad_alloc const &) {
+        ret = ENOMEM;
+    }
 
     /* do it before closing dinitctl so dtors don't mess it up */
     pending_msgs.clear();
@@ -2753,5 +2759,9 @@ int main(int argc, char **argv) {
     /* finally unref the dbus connection */
     dbus_connection_unref(conn);
 
+    if (ret) {
+        errno = ret;
+        err(1, "dbus_main");
+    }
     return 0;
 }
