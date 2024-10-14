@@ -2376,104 +2376,9 @@ struct sig_data {
     void *data;
 };
 
-static int dbus_main(DBusConnection *conn) {
+static void dbus_main(DBusConnection *conn, bool &success) {
     int pret = -1;
     bool term = false;
-    bool success = true;
-
-    if (dinitctl_set_env_event_callback(ctl, dinit_env_event_cb, conn) < 0) {
-        err(1, "failed to set environment callback");
-    }
-
-    if ((dinitctl_setup_ephemeral_directory(ctl) < 0) && (errno != ENOENT)) {
-        err(1, "failed to set up ephemeral service directory");
-    }
-
-    dbus_connection_set_exit_on_disconnect(conn, FALSE);
-
-    if (dbus_bus_request_name(conn, BUS_NAME, 0, &dbus_err) < 0) {
-        errx(1, "dbus_bus_request_name failed (%s)", dbus_err.message);
-    }
-
-    watch::setup(conn);
-    timer::setup(conn);
-
-    /* listen on activation signal from dbus */
-    dbus_bus_add_match(
-        conn,
-        "type='signal',"
-        "path='" ACTIVATOR_TARGET "',"
-        "destination='" BUS_NAME "',"
-        "interface='" ACTIVATOR_IFACE "',"
-        "member='" ACTIVATOR_SIGNAL "'",
-        &dbus_err
-    );
-    if (dbus_error_is_set(&dbus_err)) {
-        errx(1, "failed to register match rule (%s)", dbus_err.message);
-    }
-
-    auto filter_cb = [](
-        DBusConnection *conn, DBusMessage *msg, void *datap
-    ) -> DBusHandlerResult {
-        if (!dbus_message_is_signal(msg, ACTIVATOR_IFACE, ACTIVATOR_SIGNAL)) {
-            return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
-        }
-        if (!dbus_message_has_path(msg, ACTIVATOR_TARGET)) {
-            return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
-        }
-        bool *success = static_cast<bool *>(datap);
-        /* try activating the service, don't expect reply */
-        if (!manager_activate_service::invoke(conn, msg)) {
-            *success = false;
-        }
-        return DBUS_HANDLER_RESULT_HANDLED;
-    };
-    if (!dbus_connection_add_filter(conn, filter_cb, &success, nullptr)) {
-        errx(1, "failed to register dbus filter");
-    }
-
-    DBusObjectPathVTable vt;
-    vt.message_function = [](
-        DBusConnection *conn, DBusMessage *msg, void *datap
-    ) {
-        bool *success = static_cast<bool *>(datap);
-
-        if (strcmp(dbus_message_get_interface(msg), BUS_IFACE)) {
-            /* we only support our own interface at the moment */
-            return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
-        }
-
-        /* method or signal name */
-        auto *memb = dbus_message_get_member(msg);
-
-        switch (dbus_message_get_type(msg)) {
-            case DBUS_MESSAGE_TYPE_METHOD_CALL:
-                if (!manager_method_call(conn, msg, memb)) {
-                    *success = false;
-                    return DBUS_HANDLER_RESULT_HANDLED;
-                }
-                return DBUS_HANDLER_RESULT_HANDLED;
-            case DBUS_MESSAGE_TYPE_SIGNAL:
-            case DBUS_MESSAGE_TYPE_METHOD_RETURN:
-            case DBUS_MESSAGE_TYPE_ERROR:
-                 return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
-            default:
-                break;
-        }
-
-        /* fallback */
-        return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
-    };
-    vt.unregister_function = nullptr;
-
-    if (!dbus_connection_try_register_object_path(
-        conn, BUS_OBJ, &vt, &success, &dbus_err
-    )) {
-        errx(
-            1, "dbus_connection_try_register_object_path failed (%s)",
-            dbus_err.message
-        );
-    }
 
     /* readiness notification */
     auto ready_fd = get_fd(std::getenv("DINIT_DBUS_READY_FD"));
@@ -2583,18 +2488,6 @@ do_compact:
             }
         }
     }
-    /* do it before closing dinitctl so dtors don't mess it up */
-    pending_msgs.clear();
-    dinitctl_close(ctl);
-    /* try to perform an orderly shutdown */
-    for (auto &fd: fds) {
-        if (fd.fd >= 0) {
-            close(fd.fd);
-        }
-    }
-    /* finally unref the dbus connection */
-    dbus_connection_unref(conn);
-    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -2747,5 +2640,118 @@ int main(int argc, char **argv) {
         errx(1, "connection error (%s)", dbus_err.message);
     }
 
-    return dbus_main(conn);
+    if (dinitctl_set_env_event_callback(ctl, dinit_env_event_cb, conn) < 0) {
+        err(1, "failed to set environment callback");
+    }
+
+    if ((dinitctl_setup_ephemeral_directory(ctl) < 0) && (errno != ENOENT)) {
+        err(1, "failed to set up ephemeral service directory");
+    }
+
+    dbus_connection_set_exit_on_disconnect(conn, FALSE);
+
+    if (dbus_bus_request_name(conn, BUS_NAME, 0, &dbus_err) < 0) {
+        errx(1, "dbus_bus_request_name failed (%s)", dbus_err.message);
+    }
+
+    watch::setup(conn);
+    timer::setup(conn);
+
+    /* listen on activation signal from dbus */
+    dbus_bus_add_match(
+        conn,
+        "type='signal',"
+        "path='" ACTIVATOR_TARGET "',"
+        "destination='" BUS_NAME "',"
+        "interface='" ACTIVATOR_IFACE "',"
+        "member='" ACTIVATOR_SIGNAL "'",
+        &dbus_err
+    );
+    if (dbus_error_is_set(&dbus_err)) {
+        errx(1, "failed to register match rule (%s)", dbus_err.message);
+    }
+
+    /* set from cbs etc */
+    bool success = true;
+
+    auto filter_cb = [](
+        DBusConnection *conn, DBusMessage *msg, void *datap
+    ) -> DBusHandlerResult {
+        if (!dbus_message_is_signal(msg, ACTIVATOR_IFACE, ACTIVATOR_SIGNAL)) {
+            return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+        }
+        if (!dbus_message_has_path(msg, ACTIVATOR_TARGET)) {
+            return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+        }
+        bool *success = static_cast<bool *>(datap);
+        /* try activating the service, don't expect reply */
+        if (!manager_activate_service::invoke(conn, msg)) {
+            *success = false;
+        }
+        return DBUS_HANDLER_RESULT_HANDLED;
+    };
+
+    if (!dbus_connection_add_filter(conn, filter_cb, &success, nullptr)) {
+        errx(1, "failed to register dbus filter");
+    }
+
+    DBusObjectPathVTable vt;
+    vt.message_function = [](
+        DBusConnection *conn, DBusMessage *msg, void *datap
+    ) {
+        bool *success = static_cast<bool *>(datap);
+
+        if (strcmp(dbus_message_get_interface(msg), BUS_IFACE)) {
+            /* we only support our own interface at the moment */
+            return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+        }
+
+        /* method or signal name */
+        auto *memb = dbus_message_get_member(msg);
+
+        switch (dbus_message_get_type(msg)) {
+            case DBUS_MESSAGE_TYPE_METHOD_CALL:
+                if (!manager_method_call(conn, msg, memb)) {
+                    *success = false;
+                    return DBUS_HANDLER_RESULT_HANDLED;
+                }
+                return DBUS_HANDLER_RESULT_HANDLED;
+            case DBUS_MESSAGE_TYPE_SIGNAL:
+            case DBUS_MESSAGE_TYPE_METHOD_RETURN:
+            case DBUS_MESSAGE_TYPE_ERROR:
+                 return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+            default:
+                break;
+        }
+
+        /* fallback */
+        return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+    };
+    vt.unregister_function = nullptr;
+
+    if (!dbus_connection_try_register_object_path(
+        conn, BUS_OBJ, &vt, &success, &dbus_err
+    )) {
+        errx(
+            1, "dbus_connection_try_register_object_path failed (%s)",
+            dbus_err.message
+        );
+    }
+
+    /* run the main loop */
+    dbus_main(conn, success);
+
+    /* do it before closing dinitctl so dtors don't mess it up */
+    pending_msgs.clear();
+    dinitctl_close(ctl);
+    /* try to perform an orderly shutdown */
+    for (auto &fd: fds) {
+        if (fd.fd >= 0) {
+            close(fd.fd);
+        }
+    }
+    /* finally unref the dbus connection */
+    dbus_connection_unref(conn);
+
+    return 0;
 }
