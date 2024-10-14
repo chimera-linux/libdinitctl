@@ -2113,7 +2113,7 @@ struct sig_data {
     void *data;
 };
 
-static void dbus_main(DBusConnection *conn, bool &success) {
+static void dbus_main(DBusConnection *conn) {
     int pret = -1;
     bool term = false;
 
@@ -2126,25 +2126,23 @@ static void dbus_main(DBusConnection *conn, bool &success) {
         goto do_dispatch;
     }
 
-    while (success) {
+    for (;;) {
         pret = poll(fds.data(), fds.size(), -1);
         if (pret < 0) {
             if (errno == EINTR) {
-                goto do_compact;
+                continue;
             }
             warn("poll failed");
-            success = false;
-            goto do_compact;
+            return;
         } else if (pret == 0) {
-            goto do_compact;
+            continue;
         }
         /* signal fd first */
         if (fds[0].revents == POLLIN) {
             sig_data sigd;
             if (read(fds[0].fd, &sigd, sizeof(sigd)) != sizeof(sigd)) {
                 warn("signal read failed");
-                success = false;
-                goto do_compact;
+                return;
             }
             switch (sigd.sign) {
                 case SIGTERM:
@@ -2154,8 +2152,7 @@ static void dbus_main(DBusConnection *conn, bool &success) {
                 case SIGALRM: {
                     if (!static_cast<timer *>(sigd.data)->handle()) {
                         warnx("timeout handle failed");
-                        success = false;
-                        goto do_compact;
+                        return;
                     }
                 }
                 default:
@@ -2178,24 +2175,19 @@ static void dbus_main(DBusConnection *conn, bool &success) {
                 }
                 if (!w.handle(fds[i])) {
                     warnx("watch handle failed");
-                    success = false;
-                    goto do_compact;
+                    return;
                 }
                 break;
             }
         }
 do_dispatch:
         /* data to dispatch */
-        success = true;
         for (;;) {
             auto disp = dbus_connection_get_dispatch_status(conn);
             if (disp != DBUS_DISPATCH_DATA_REMAINS) {
                 break;
             }
             dbus_connection_dispatch(conn);
-        }
-        if (!success) {
-            goto do_compact;
         }
         /* signal readiness after initial dispatch */
         if (ready_fd >= 0) {
@@ -2210,13 +2202,12 @@ do_dispatch:
                     continue;
                 }
                 warn("dinitctl_dispatch failed");
-                success = false;
-                goto do_compact;
+                return;
             } else if (!nev) {
                 break;
             }
         }
-do_compact:
+        /* compact any fds after dispatch */
         for (auto it = fds.begin(); it != fds.end();) {
             if (it->fd == -1) {
                 it = fds.erase(it);
@@ -2408,11 +2399,8 @@ int main(int argc, char **argv) {
         errx(1, "failed to register match rule (%s)", dbus_err.message);
     }
 
-    /* set from cbs etc */
-    bool success = true;
-
     auto filter_cb = [](
-        DBusConnection *conn, DBusMessage *msg, void *datap
+        DBusConnection *conn, DBusMessage *msg, void *
     ) -> DBusHandlerResult {
         if (!dbus_message_is_signal(msg, ACTIVATOR_IFACE, ACTIVATOR_SIGNAL)) {
             return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -2420,13 +2408,12 @@ int main(int argc, char **argv) {
         if (!dbus_message_has_path(msg, ACTIVATOR_TARGET)) {
             return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
         }
-        bool *success = static_cast<bool *>(datap);
         /* try activating the service, don't expect reply */
         manager_activate_service::invoke(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     };
 
-    if (!dbus_connection_add_filter(conn, filter_cb, &success, nullptr)) {
+    if (!dbus_connection_add_filter(conn, filter_cb, nullptr, nullptr)) {
         errx(1, "failed to register dbus filter");
     }
 
@@ -2472,7 +2459,7 @@ int main(int argc, char **argv) {
 
     /* run the main loop; simplify out-of-memory scenarios */
     try {
-        dbus_main(conn, success);
+        dbus_main(conn);
     } catch (std::bad_alloc const &) {
         ret = ENOMEM;
     }
