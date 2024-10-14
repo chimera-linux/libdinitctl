@@ -278,14 +278,7 @@ struct watch {
             if (!dbus_watch_get_enabled(w)) {
                 return true;
             }
-            try {
-                if (!watches.emplace_back(w).enable()) {
-                    watches.pop_back();
-                    return false;
-                }
-            } catch (std::bad_alloc const &) {
-                return false;
-            }
+            watches.emplace_back(w).enable();
             return true;
         };
         auto remove_cb = [](DBusWatch *w, void *) {
@@ -307,11 +300,7 @@ struct watch {
     }
 
     bool enable() {
-        try {
-            fds.emplace_back(pfd);
-        } catch (std::bad_alloc const &) {
-            return false;
-        }
+        fds.emplace_back(pfd);
         return true;
     }
 
@@ -398,12 +387,7 @@ struct timer {
             if (!dbus_timeout_get_enabled(t)) {
                 return ret;
             }
-            try {
-                timers.emplace_back(t, ret).arm();
-            } catch (std::bad_alloc const &) {
-                warnx("out of memory");
-                return false;
-            }
+            timers.emplace_back(t, ret).arm();
             if (!ret) {
                 timers.pop_back();
             }
@@ -541,7 +525,7 @@ struct msg_list {
     pending_msg *reserve_chunk() {
         chunk *chk = static_cast<chunk *>(calloc(1, sizeof(chunk)));
         if (!chk) {
-            return nullptr;
+            throw std::bad_alloc{};
         }
         for (std::size_t i = 0; i < (chksize - 1); ++i) {
             new (&chk->msg[i]) pending_msg{};
@@ -555,17 +539,17 @@ struct msg_list {
         return msg_unused;
     }
 
-    pending_msg *add(DBusConnection *conn, DBusMessage *msg) {
+    pending_msg &add(DBusConnection *conn, DBusMessage *msg) {
         auto *p = msg_unused;
-        if (!p && !(p = reserve_chunk())) {
-            return nullptr;
+        if (!p) {
+            p = reserve_chunk();
         }
         msg_unused = msg_unused->next;
         p->~pending_msg();
         new (p) pending_msg{conn, msg};
         p->next = msg_top;
         msg_top = p;
-        return p;
+        return *p;
     }
 
     pending_msg *begin() const {
@@ -609,58 +593,54 @@ static msg_list pending_msgs;
 template<typename ...A>
 static bool msg_get_args(DBusMessage *msg, A const &...args) {
     if (!dbus_message_get_args(msg, &dbus_err, args..., DBUS_TYPE_INVALID)) {
+        if (dbus_error_has_name(&dbus_err, DBUS_ERROR_NO_MEMORY)) {
+            throw std::bad_alloc{};
+        }
         dbus_error_free(&dbus_err);
         return false;
     }
     return true;
 }
 
-static bool msg_send_error(
+static void msg_send_error(
     DBusConnection *conn, DBusMessage *msg, char const *err, char const *desc
 ) {
-    if (!err) {
-        warn("unknown dinitctl error");
-        return false;
-    }
     DBusMessage *ret = dbus_message_new_error(msg, err, desc);
     if (!ret || !dbus_connection_send(conn, ret, nullptr)) {
         warnx("dbus_connection_send failed");
         if (ret) {
             dbus_message_unref(ret);
         }
-        return false;
+        throw std::bad_alloc{};
     }
     dbus_message_unref(ret);
-    return true;
 }
 
-static DBusMessage *msg_new_reply(dinitctl *sctl, pending_msg &pend) {
+static DBusMessage *msg_new_reply(pending_msg &pend) {
     if (dbus_message_get_no_reply(pend.msg)) {
         pending_msgs.drop(pend);
         return nullptr;
     }
     DBusMessage *retm = dbus_message_new_method_return(pend.msg);
     if (!retm) {
-        pending_msgs.drop(pend);
-        warnx("could not build method reply");
-        dinitctl_abort(sctl, EBADMSG);
-        return nullptr;
+        throw std::bad_alloc{};
     }
     return retm;
 }
 
 static bool check_error(dinitctl *sctl, pending_msg &pend, int ret) {
     if (ret < 0) {
+        if (errno == ENOMEM) throw std::bad_alloc{};
         dinitctl_abort(sctl, errno);
         pending_msgs.drop(pend);
         return false;
     } else if (ret) {
-        if (!msg_send_error(
-            pend.conn, pend.msg,
-            enum_to_str(ret, error_str, sizeof(error_str), nullptr),
-            nullptr
-        )) {
+        auto *err = enum_to_str(ret, error_str, sizeof(error_str), nullptr);
+        if (!err) {
+            warn("unknown dinitctl error");
             dinitctl_abort(sctl, EBADMSG);
+        } else {
+            msg_send_error(pend.conn, pend.msg, err, nullptr);
         }
         pending_msgs.drop(pend);
         return false;
@@ -668,35 +648,30 @@ static bool check_error(dinitctl *sctl, pending_msg &pend, int ret) {
     return true;
 }
 
-static bool send_reply(dinitctl *sctl, pending_msg &pend, DBusMessage *retm) {
+static void send_reply(pending_msg &pend, DBusMessage *retm) {
     if (!dbus_connection_send(pend.conn, retm, nullptr)) {
-        warnx("dbus_connection_send failed");
-        dinitctl_abort(sctl, EBADMSG);
-        pending_msgs.drop(pend);
-        return false;
+        throw std::bad_alloc{};
     }
     dbus_message_unref(retm);
-    return true;
+    pending_msgs.drop(pend);
 }
 
-static bool call_load_service(
+static void call_load_service(
     pending_msg &pend, DBusConnection *conn,
     char const *service_name, bool find, dinitctl_async_cb cb
 ) {
     int ret = dinitctl_load_service_async(ctl, service_name, find, cb, &pend);
     if (ret < 0) {
         if (errno == EINVAL) {
-            pending_msgs.drop(pend);
-            return msg_send_error(
+            msg_send_error(
                 conn, pend.msg, DBUS_ERROR_INVALID_ARGS, nullptr
             );
+            pending_msgs.drop(pend);
+            return;
         }
-        warn("dinitctl_load_service_async");
-        pending_msgs.drop(pend);
-        dinitctl_abort(ctl, EBADMSG);
-        return false;
+        /* only other error is ENOMEM */
+        throw std::bad_alloc{};
     }
-    return true;
 }
 
 struct manager_unload_service {
@@ -706,13 +681,11 @@ struct manager_unload_service {
         if (!check_error(sctl, pend, ret)) {
             return;
         }
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             return;
         }
-        if (send_reply(sctl, pend, retm)) {
-            pending_msgs.drop(pend);
-        }
+        send_reply(pend, retm);
     }
 
     static void load_cb(dinitctl *sctl, void *data) {
@@ -725,29 +698,26 @@ struct manager_unload_service {
         if (dinitctl_unload_service_async(
             ctl, handle, pend.reload, async_cb, &pend
         ) < 0) {
-            warn("dinitctl_unload_service_async");
-            pending_msgs.drop(pend);
-            dinitctl_abort(sctl, EBADMSG);
+            /* only ENOMEM is possible */
+            throw std::bad_alloc{};
         }
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char const *service_name;
         dbus_bool_t reload;
 
         if (!msg_get_args(
             msg, DBUS_TYPE_STRING, &service_name, DBUS_TYPE_BOOLEAN, &reload
         )) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
-        pend->reload = reload;
+        auto &pend = pending_msgs.add(conn, msg);
+        pend.reload = reload;
 
-        return call_load_service(*pend, conn, service_name, true, load_cb);
+        call_load_service(pend, conn, service_name, true, load_cb);
     }
 };
 
@@ -758,7 +728,7 @@ struct manager_start_service {
         if (!check_error(sctl, pend, ret)) {
             return;
         }
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             return;
         }
@@ -766,12 +736,9 @@ struct manager_start_service {
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_UINT32, &ser, DBUS_TYPE_INVALID
         )) {
-            pending_msgs.drop(pend);
-            warnx("could not set reply value");
-            dinitctl_abort(sctl, EBADMSG);
-            return;
+            throw std::bad_alloc{};
         }
-        send_reply(sctl, pend, retm);
+        send_reply(pend, retm);
     }
 
     static void load_cb(dinitctl *sctl, void *data) {
@@ -785,29 +752,26 @@ struct manager_start_service {
         if (dinitctl_start_service_async(
             ctl, handle, pend.pin, false, async_cb, &pend
         ) < 0) {
-            warn("dinitctl_start_service_async");
-            pending_msgs.drop(pend);
-            dinitctl_abort(sctl, EBADMSG);
+            /* only ENOMEM is possible */
+            throw std::bad_alloc{};
         }
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char const *service_name;
         dbus_bool_t pin;
 
         if (!msg_get_args(
             msg, DBUS_TYPE_STRING, &service_name, DBUS_TYPE_BOOLEAN, &pin
         )) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
-        pend->pin = pin;
+        auto &pend = pending_msgs.add(conn, msg);
+        pend.pin = pin;
 
-        return call_load_service(*pend, conn, service_name, false, load_cb);
+        call_load_service(pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -818,7 +782,7 @@ struct manager_stop_service {
         if (!check_error(sctl, pend, ret)) {
             return;
         }
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             return;
         }
@@ -826,12 +790,9 @@ struct manager_stop_service {
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_UINT32, &ser, DBUS_TYPE_INVALID
         )) {
-            pending_msgs.drop(pend);
-            warnx("could not set reply value");
-            dinitctl_abort(sctl, EBADMSG);
-            return;
+            throw std::bad_alloc{};
         }
-        send_reply(sctl, pend, retm);
+        send_reply(pend, retm);
     }
 
     static void load_cb(dinitctl *sctl, void *data) {
@@ -845,13 +806,12 @@ struct manager_stop_service {
         if (dinitctl_stop_service_async(
             ctl, handle, pend.pin, pend.reload, pend.gentle, false, async_cb, &pend
         ) < 0) {
-            warn("dinitctl_stop_service_async");
-            pending_msgs.drop(pend);
-            dinitctl_abort(sctl, EBADMSG);
+            /* only ENOMEM is possible */
+            throw std::bad_alloc{};
         }
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char const *service_name;
         dbus_bool_t pin, restart, gentle;
 
@@ -862,18 +822,16 @@ struct manager_stop_service {
             DBUS_TYPE_BOOLEAN, &restart,
             DBUS_TYPE_BOOLEAN, &gentle
         )) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
-        pend->pin = pin;
-        pend->reload = restart;
-        pend->gentle = gentle;
+        auto &pend = pending_msgs.add(conn, msg);
+        pend.pin = pin;
+        pend.reload = restart;
+        pend.gentle = gentle;
 
-        return call_load_service(*pend, conn, service_name, false, load_cb);
+        call_load_service(pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -884,7 +842,7 @@ struct manager_wake_service {
         if (!check_error(sctl, pend, ret)) {
             return;
         }
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             return;
         }
@@ -892,12 +850,9 @@ struct manager_wake_service {
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_UINT32, &ser, DBUS_TYPE_INVALID
         )) {
-            pending_msgs.drop(pend);
-            warnx("could not set reply value");
-            dinitctl_abort(sctl, EBADMSG);
-            return;
+            throw std::bad_alloc{};
         }
-        send_reply(sctl, pend, retm);
+        send_reply(pend, retm);
     }
 
     static void load_cb(dinitctl *sctl, void *data) {
@@ -911,29 +866,26 @@ struct manager_wake_service {
         if (dinitctl_wake_service_async(
             ctl, handle, pend.pin, false, async_cb, &pend
         ) < 0) {
-            warn("dinitctl_wake_service_async");
-            pending_msgs.drop(pend);
-            dinitctl_abort(sctl, EBADMSG);
+            /* only ENOMEM is possible */
+            throw std::bad_alloc{};
         }
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char const *service_name;
         dbus_bool_t pin;
 
         if (!msg_get_args(
             msg, DBUS_TYPE_STRING, &service_name, DBUS_TYPE_BOOLEAN, &pin
         )) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
-        pend->pin = pin;
+        auto &pend = pending_msgs.add(conn, msg);
+        pend.pin = pin;
 
-        return call_load_service(*pend, conn, service_name, false, load_cb);
+        call_load_service(pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -944,7 +896,7 @@ struct manager_release_service {
         if (!check_error(sctl, pend, ret)) {
             return;
         }
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             return;
         }
@@ -952,12 +904,9 @@ struct manager_release_service {
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_UINT32, &ser, DBUS_TYPE_INVALID
         )) {
-            pending_msgs.drop(pend);
-            warnx("could not set reply value");
-            dinitctl_abort(sctl, EBADMSG);
-            return;
+            throw std::bad_alloc{};
         }
-        send_reply(sctl, pend, retm);
+        send_reply(pend, retm);
     }
 
     static void load_cb(dinitctl *sctl, void *data) {
@@ -971,29 +920,26 @@ struct manager_release_service {
         if (dinitctl_release_service_async(
             ctl, handle, pend.pin, false, async_cb, &pend
         ) < 0) {
-            warn("dinitctl_release_service_async");
-            pending_msgs.drop(pend);
-            dinitctl_abort(sctl, EBADMSG);
+            /* only ENOMEM is possible */
+            throw std::bad_alloc{};
         }
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char const *service_name;
         dbus_bool_t pin;
 
         if (!msg_get_args(
             msg, DBUS_TYPE_STRING, &service_name, DBUS_TYPE_BOOLEAN, &pin
         )) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
-        pend->pin = pin;
+        auto &pend = pending_msgs.add(conn, msg);
+        pend.pin = pin;
 
-        return call_load_service(*pend, conn, service_name, false, load_cb);
+        call_load_service(pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -1004,13 +950,11 @@ struct manager_unpin_service {
         if (!check_error(sctl, pend, ret)) {
             return;
         }
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             return;
         }
-        if (send_reply(sctl, pend, retm)) {
-            pending_msgs.drop(pend);
-        }
+        send_reply(pend, retm);
     }
 
     static void load_cb(dinitctl *sctl, void *data) {
@@ -1022,25 +966,21 @@ struct manager_unpin_service {
         }
         pend.handle = handle;
         if (dinitctl_unpin_service_async(ctl, handle, async_cb, &pend) < 0) {
-            warn("dinitctl_unpin_service_async");
-            pending_msgs.drop(pend);
-            dinitctl_abort(sctl, EBADMSG);
+            /* only ENOMEM is possible */
+            throw std::bad_alloc{};
         }
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char const *service_name;
 
         if (!msg_get_args(msg, DBUS_TYPE_STRING, &service_name)) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
-
-        return call_load_service(*pend, conn, service_name, false, load_cb);
+        auto &pend = pending_msgs.add(conn, msg);
+        call_load_service(pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -1051,13 +991,11 @@ struct manager_add_remove_dep {
         if (!check_error(sctl, pend, ret)) {
             return;
         }
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             return;
         }
-        if (send_reply(sctl, pend, retm)) {
-            pending_msgs.drop(pend);
-        }
+        send_reply(pend, retm);
     }
 
     static void load_cb(dinitctl *sctl, void *data) {
@@ -1082,13 +1020,12 @@ struct manager_add_remove_dep {
             ctl, pend.handle, handle, dinitctl_dependency_type(pend.type),
             pend.remove, pend.enable, async_cb, &pend
         ) < 0) {
-            warn("dinitctl_unpin_service_async");
-            pending_msgs.drop(pend);
-            dinitctl_abort(sctl, EBADMSG);
+            /* only ENOMEM is possible */
+            throw std::bad_alloc{};
         }
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char const *from_name, *to_name, *dep_type;
         dbus_bool_t remove, enable;
         int dep_typei;
@@ -1101,26 +1038,25 @@ struct manager_add_remove_dep {
             DBUS_TYPE_BOOLEAN, &remove,
             DBUS_TYPE_BOOLEAN, &enable
         )) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
         dep_typei = str_to_enum(
             dep_type, dependency_type_str, sizeof(dependency_type_str)
         );
         if (dep_typei < 0) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
-        pend->data = const_cast<char *>(to_name); /* owned by DBusMessage */
-        pend->remove = remove;
-        pend->enable = enable;
-        pend->type = dep_typei;
+        auto &pend = pending_msgs.add(conn, msg);
+        pend.data = const_cast<char *>(to_name); /* owned by DBusMessage */
+        pend.remove = remove;
+        pend.enable = enable;
+        pend.type = dep_typei;
 
-        return call_load_service(*pend, conn, from_name, false, load_cb);
+        call_load_service(pend, conn, from_name, false, load_cb);
     }
 };
 
@@ -1133,23 +1069,17 @@ struct manager_get_service_dir {
         if (!check_error(sctl, pend, ret)) {
             return;
         }
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             return;
         }
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_STRING, &dir, DBUS_TYPE_INVALID
         )) {
-            pending_msgs.drop(pend);
-            std::free(dir);
-            warnx("could not set reply value");
-            dinitctl_abort(sctl, EBADMSG);
-            return;
+            throw std::bad_alloc{};
         }
         std::free(dir);
-        if (send_reply(sctl, pend, retm)) {
-            pending_msgs.drop(pend);
-        }
+        send_reply(pend, retm);
     }
 
     static void load_cb(dinitctl *sctl, void *data) {
@@ -1163,25 +1093,21 @@ struct manager_get_service_dir {
         if (dinitctl_get_service_directory_async(
             ctl, handle, async_cb, &pend
         ) < 0) {
-            warn("dinitctl_get_service_directory_async");
-            pending_msgs.drop(pend);
-            dinitctl_abort(sctl, EBADMSG);
+            /* only ENOMEM is possible */
+            throw std::bad_alloc{};
         }
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char const *service_name;
 
         if (!msg_get_args(msg, DBUS_TYPE_STRING, &service_name)) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
-
-        return call_load_service(*pend, conn, service_name, false, load_cb);
+        auto &pend = pending_msgs.add(conn, msg);
+        call_load_service(pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -1194,23 +1120,17 @@ struct manager_get_service_log {
         if (!check_error(sctl, pend, ret)) {
             return;
         }
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             return;
         }
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_STRING, &log, DBUS_TYPE_INVALID
         )) {
-            pending_msgs.drop(pend);
-            std::free(log);
-            warnx("could not set reply value");
-            dinitctl_abort(sctl, EBADMSG);
-            return;
+            throw std::bad_alloc{};
         }
         std::free(log);
-        if (send_reply(sctl, pend, retm)) {
-            pending_msgs.drop(pend);
-        }
+        send_reply(pend, retm);
     }
 
     static void load_cb(dinitctl *sctl, void *data) {
@@ -1224,29 +1144,26 @@ struct manager_get_service_log {
         if (dinitctl_get_service_log_async(
             ctl, handle, pend.remove, async_cb, &pend
         ) < 0) {
-            warn("dinitctl_get_service_log_async");
-            pending_msgs.drop(pend);
-            dinitctl_abort(sctl, EBADMSG);
+            /* only ENOMEM is possible */
+            throw std::bad_alloc{};
         }
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char const *service_name;
         dbus_bool_t clear;
 
         if (!msg_get_args(
             msg, DBUS_TYPE_STRING, &service_name, DBUS_TYPE_BOOLEAN, &clear
         )) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
-        pend->remove = clear;
+        auto &pend = pending_msgs.add(conn, msg);
+        pend.remove = clear;
 
-        return call_load_service(*pend, conn, service_name, false, load_cb);
+        call_load_service(pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -1381,7 +1298,7 @@ struct manager_get_service_status {
             return;
         }
 
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             return;
         }
@@ -1390,24 +1307,16 @@ struct manager_get_service_status {
         if (!dbus_message_iter_open_container(
             &iter, DBUS_TYPE_STRUCT, nullptr, &siter
         )) {
-            goto container_err;
+            throw std::bad_alloc{};
         }
         if (!append_status(status, &siter)) {
             dbus_message_iter_abandon_container(&iter, &siter);
-            goto container_err;
+            throw std::bad_alloc{};
         }
         if (!dbus_message_iter_close_container(&iter, &siter)) {
-            goto container_err;
+            throw std::bad_alloc{};
         }
-        if (send_reply(sctl, pend, retm)) {
-            pending_msgs.drop(pend);
-        }
-        return;
-container_err:
-        pending_msgs.drop(pend);
-        warnx("could not initialize reply container");
-        dinitctl_abort(sctl, EBADMSG);
-        return;
+        send_reply(pend, retm);
     }
 
     static void load_cb(dinitctl *sctl, void *data) {
@@ -1421,25 +1330,21 @@ container_err:
         if (dinitctl_get_service_status_async(
             ctl, handle, async_cb, &pend
         ) < 0) {
-            warn("dinitctl_get_service_status_async");
-            pending_msgs.drop(pend);
-            dinitctl_abort(sctl, EBADMSG);
+            /* only ENOMEM is possible */
+            throw std::bad_alloc{};
         }
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char const *service_name;
 
         if (!msg_get_args(msg, DBUS_TYPE_STRING, &service_name)) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
-
-        return call_load_service(*pend, conn, service_name, true, load_cb);
+        auto &pend = pending_msgs.add(conn, msg);
+        call_load_service(pend, conn, service_name, true, load_cb);
     }
 };
 
@@ -1450,13 +1355,11 @@ struct manager_set_service_trigger {
         if (!check_error(sctl, pend, ret)) {
             return;
         }
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             return;
         }
-        if (send_reply(sctl, pend, retm)) {
-            pending_msgs.drop(pend);
-        }
+        send_reply(pend, retm);
     }
 
     static void load_cb(dinitctl *sctl, void *data) {
@@ -1470,29 +1373,26 @@ struct manager_set_service_trigger {
         if (dinitctl_set_service_trigger_async(
             ctl, handle, pend.enable, async_cb, &pend
         ) < 0) {
-            warn("dinitctl_set_service_trigger_async");
-            pending_msgs.drop(pend);
-            dinitctl_abort(sctl, EBADMSG);
+            /* only ENOMEM is possible */
+            throw std::bad_alloc{};
         }
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char const *service_name;
         dbus_bool_t val;
 
         if (!msg_get_args(
             msg, DBUS_TYPE_STRING, &service_name, DBUS_TYPE_BOOLEAN, &val
         )) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
-        pend->enable = val;
+        auto &pend = pending_msgs.add(conn, msg);
+        pend.enable = val;
 
-        return call_load_service(*pend, conn, service_name, false, load_cb);
+        call_load_service(pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -1503,13 +1403,11 @@ struct manager_signal_service {
         if (!check_error(sctl, pend, ret)) {
             return;
         }
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             return;
         }
-        if (send_reply(sctl, pend, retm)) {
-            pending_msgs.drop(pend);
-        }
+        send_reply(pend, retm);
     }
 
     static void load_cb(dinitctl *sctl, void *data) {
@@ -1523,29 +1421,26 @@ struct manager_signal_service {
         if (dinitctl_signal_service_async(
             ctl, handle, pend.type, async_cb, &pend
         ) < 0) {
-            warn("dinitctl_signal_service_async");
-            pending_msgs.drop(pend);
-            dinitctl_abort(sctl, EBADMSG);
+            /* only ENOMEM is possible */
+            throw std::bad_alloc{};
         }
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char const *service_name;
         dbus_int32_t val;
 
         if (!msg_get_args(
             msg, DBUS_TYPE_STRING, &service_name, DBUS_TYPE_INT32, &val
         )) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
-        pend->type = val;
+        auto &pend = pending_msgs.add(conn, msg);
+        pend.type = val;
 
-        return call_load_service(*pend, conn, service_name, false, load_cb);
+        call_load_service(pend, conn, service_name, false, load_cb);
     }
 };
 
@@ -1558,7 +1453,7 @@ struct manager_list_services {
         if (!check_error(sctl, pend, ret)) {
             return;
         }
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             std::free(entries);
             return;
@@ -1587,62 +1482,53 @@ struct manager_list_services {
             DBUS_STRUCT_END_CHAR_AS_STRING,
             &aiter
         )) {
-            goto container_err;
+            std::free(entries);
+            throw std::bad_alloc{};
         }
         for (ssize_t i = 0; i < len; ++i) {
             DBusMessageIter siter;
             if (!dbus_message_iter_open_container(
                 &aiter, DBUS_TYPE_STRUCT, nullptr, &siter
             )) {
-                goto container_err;
+                std::free(entries);
+                throw std::bad_alloc{};
             }
             char const *nstr = entries[i].name;
             if (!dbus_message_iter_append_basic(&siter, DBUS_TYPE_STRING, &nstr)) {
                 dbus_message_iter_abandon_container(&aiter, &siter);
-                goto container_err;
+                std::free(entries);
+                throw std::bad_alloc{};
             }
             /* now just append status, easy */
             if (!append_status(entries[i].status, &siter)) {
                 dbus_message_iter_abandon_container(&aiter, &siter);
-                goto container_err;
+                std::free(entries);
+                throw std::bad_alloc{};
             }
             if (!dbus_message_iter_close_container(&aiter, &siter)) {
-                goto container_err;
+                std::free(entries);
+                throw std::bad_alloc{};
             }
         }
         if (!dbus_message_iter_close_container(&iter, &aiter)) {
-            goto container_err;
+                std::free(entries);
+                throw std::bad_alloc{};
         }
-        if (send_reply(sctl, pend, retm)) {
-            std::free(entries);
-            pending_msgs.drop(pend);
-        }
-        return;
-container_err:
-        dbus_message_iter_abandon_container(&iter, &aiter);
+        send_reply(pend, retm);
         std::free(entries);
-        pending_msgs.drop(pend);
-        warnx("could not initialize reply container");
-        dinitctl_abort(sctl, EBADMSG);
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         if (!msg_get_args(msg)) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
-        int ret = dinitctl_list_services_async(ctl, async_cb, pend);
+        auto &pend = pending_msgs.add(conn, msg);
+        int ret = dinitctl_list_services_async(ctl, async_cb, &pend);
         if (ret < 0) {
-            warn("dinitctl_list_services_async");
-            pending_msgs.drop(*pend);
-            dinitctl_abort(ctl, EBADMSG);
-            return false;
+            throw std::bad_alloc{};
         }
-        return true;
     }
 };
 
@@ -1672,11 +1558,9 @@ struct manager_set_env {
             }
             /* error here */
             if (errno == EINVAL) {
-                if (!msg_send_error(
+                msg_send_error(
                     pend.conn, pend.msg, DBUS_ERROR_INVALID_ARGS, nullptr
-                )) {
-                    dinitctl_abort(sctl, EBADMSG);
-                }
+                );
             } else {
                 dinitctl_abort(sctl, errno);
             }
@@ -1684,67 +1568,53 @@ struct manager_set_env {
             return;
         }
         /* final reply */
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             return;
         }
-        if (send_reply(sctl, pend, retm)) {
-            pending_msgs.drop(pend);
-        }
+        send_reply(pend, retm);
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char **envs = nullptr;
         int nenvs;
 
         if (!msg_get_args(
             msg, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING, &envs, &nenvs
         )) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
         if (nenvs == 0) {
             /* reply right away */
             if (dbus_message_get_no_reply(msg)) {
                 dbus_free_string_array(envs);
-                return true;
+                return;
             }
             DBusMessage *retm = dbus_message_new_method_return(msg);
-            if (!retm) {
-                warnx("could not build method reply");
+            if (!retm || !dbus_connection_send(conn, retm, nullptr)) {
                 dbus_free_string_array(envs);
-                return false;
-            }
-            if (!dbus_connection_send(conn, retm, nullptr)) {
-                warnx("dbus_connection_send failed");
-                dbus_free_string_array(envs);
-                return false;
+                throw std::bad_alloc{};
             }
             dbus_message_unref(retm);
-            return true;
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            dbus_free_string_array(envs);
-            return false;
-        }
-        pend->darray = envs;
-        pend->type = nenvs;
-        pend->idx = 0;
-        if (!setenv_async(ctl, envs[0], async_cb, pend)) {
+        auto &pend = pending_msgs.add(conn, msg);
+        pend.darray = envs;
+        pend.type = nenvs;
+        pend.idx = 0;
+        if (!setenv_async(ctl, envs[0], async_cb, &pend)) {
             if (errno == EINVAL) {
-                pending_msgs.drop(*pend);
-                return msg_send_error(
-                    conn, pend->msg, DBUS_ERROR_INVALID_ARGS, nullptr
+                msg_send_error(
+                    conn, pend.msg, DBUS_ERROR_INVALID_ARGS, nullptr
                 );
+                pending_msgs.drop(pend);
+                return;
             }
-            warn("dinitctl_setenv_async");
-            pending_msgs.drop(*pend);
-            dinitctl_abort(ctl, EBADMSG);
-            return false;
+            throw std::bad_alloc{};
         }
-        return true;
     }
 };
 
@@ -1757,7 +1627,7 @@ struct manager_get_all_env {
         if (!check_error(sctl, pend, ret)) {
             return;
         }
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             std::free(vars);
             return;
@@ -1767,49 +1637,36 @@ struct manager_get_all_env {
         if (!dbus_message_iter_open_container(
             &iter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING, &aiter
         )) {
-            goto container_err;
+            std::free(vars);
+            throw std::bad_alloc{};
         }
         for (char *curvar = vars; bsize;) {
             if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &curvar)) {
-                goto container_err;
+                throw std::bad_alloc{};
             }
             auto slen = std::strlen(curvar);
             curvar += slen + 1;
             bsize -= slen + 1;
         }
         if (!dbus_message_iter_close_container(&iter, &aiter)) {
-            goto container_err;
-        }
-        if (send_reply(sctl, pend, retm)) {
             std::free(vars);
-            pending_msgs.drop(pend);
+            throw std::bad_alloc{};
         }
-        return;
-container_err:
-        dbus_message_iter_abandon_container(&iter, &aiter);
+        send_reply(pend, retm);
         std::free(vars);
-        pending_msgs.drop(pend);
-        warnx("could not initialize reply container");
-        dinitctl_abort(sctl, EBADMSG);
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         if (!msg_get_args(msg)) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
-        int ret = dinitctl_get_all_env_async(ctl, async_cb, pend);
+        auto &pend = pending_msgs.add(conn, msg);
+        int ret = dinitctl_get_all_env_async(ctl, async_cb, &pend);
         if (ret < 0) {
-            warn("dinitctl_get_all_env_async");
-            pending_msgs.drop(*pend);
-            dinitctl_abort(ctl, EBADMSG);
-            return false;
+            throw std::bad_alloc{};
         }
-        return true;
     }
 };
 
@@ -1820,48 +1677,42 @@ struct manager_shutdown {
         if (!check_error(sctl, pend, ret)) {
             return;
         }
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             return;
         }
-        if (send_reply(sctl, pend, retm)) {
-            pending_msgs.drop(pend);
-        }
+        send_reply(pend, retm);
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char const *type;
 
         if (!msg_get_args(msg, DBUS_TYPE_STRING, &type)) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
         int stypei = str_to_enum(
             type, shutdown_type_str, sizeof(shutdown_type_str)
         );
         if (stypei < 0) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
+        auto &pend = pending_msgs.add(conn, msg);
         int ret = dinitctl_shutdown_async(
-            ctl, dinitctl_shutdown_type(stypei), async_cb, pend
+            ctl, dinitctl_shutdown_type(stypei), async_cb, &pend
         );
         if (ret < 0) {
             if (errno == EINVAL) {
-                pending_msgs.drop(*pend);
-                return msg_send_error(
-                    conn, pend->msg, DBUS_ERROR_INVALID_ARGS, nullptr
+                msg_send_error(
+                    conn, pend.msg, DBUS_ERROR_INVALID_ARGS, nullptr
                 );
+                pending_msgs.drop(pend);
+                return;
             }
-            warn("dinitctl_shutdown_async");
-            pending_msgs.drop(*pend);
-            dinitctl_abort(ctl, EBADMSG);
-            return false;
+            throw std::bad_alloc{};
         }
-        return true;
     }
 };
 
@@ -1874,7 +1725,7 @@ struct manager_query_dirs {
         if (!check_error(sctl, pend, ret)) {
             return;
         }
-        DBusMessage *retm = msg_new_reply(sctl, pend);
+        DBusMessage *retm = msg_new_reply(pend);
         if (!retm) {
             std::free(dirs);
             return;
@@ -1884,47 +1735,35 @@ struct manager_query_dirs {
         if (!dbus_message_iter_open_container(
             &iter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING, &aiter
         )) {
-            goto container_err;
+            std::free(dirs);
+            throw std::bad_alloc{};
         }
         if (!dbus_message_iter_append_fixed_array(
             &aiter, DBUS_TYPE_STRING, &dirs, int(ndirs)
         )) {
             dbus_message_iter_abandon_container(&iter, &aiter);
-            goto container_err;
+            std::free(dirs);
+            throw std::bad_alloc{};
         }
         if (!dbus_message_iter_close_container(&iter, &aiter)) {
-            goto container_err;
-        }
-        if (send_reply(sctl, pend, retm)) {
             std::free(dirs);
-            pending_msgs.drop(pend);
+            throw std::bad_alloc{};
         }
-        return;
-container_err:
-        dbus_message_iter_abandon_container(&iter, &aiter);
+        send_reply(pend, retm);
         std::free(dirs);
-        pending_msgs.drop(pend);
-        warnx("could not initialize reply container");
-        dinitctl_abort(sctl, EBADMSG);
     }
 
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         if (!msg_get_args(msg)) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
-        int ret = dinitctl_query_service_dirs_async(ctl, async_cb, pend);
+        auto &pend = pending_msgs.add(conn, msg);
+        int ret = dinitctl_query_service_dirs_async(ctl, async_cb, &pend);
         if (ret < 0) {
-            warn("dinitctl_query_service_dirs_async");
-            pending_msgs.drop(*pend);
-            dinitctl_abort(ctl, EBADMSG);
-            return false;
+            throw std::bad_alloc{};
         }
-        return true;
     }
 };
 
@@ -1934,9 +1773,7 @@ struct manager_activate_service {
             BUS_OBJ, ACTIVATOR_IFACE, ACTIVATOR_FAILURE
         );
         if (!ret) {
-            warnx("failed to create activation failure signal");
-            pending_msgs.drop(pend);
-            return false;
+            throw std::bad_alloc{};
         }
         char const *service_name = static_cast<char *>(pend.data);
         char const *errname = ACTIVATOR_ERROR;
@@ -1949,20 +1786,17 @@ struct manager_activate_service {
         )) {
             warnx("failed to append activation failure args");
             dbus_message_unref(ret);
-            pending_msgs.drop(pend);
-            return false;
+            throw std::bad_alloc{};
         }
         if (!dbus_message_set_destination(ret, ACTIVATOR_DEST)) {
             warnx("failed set failure destination");
             dbus_message_unref(ret);
-            pending_msgs.drop(pend);
-            return false;
+            throw std::bad_alloc{};
         }
         if (!dbus_connection_send(pend.conn, ret, nullptr)) {
             warnx("failed to send activation failure");
             dbus_message_unref(ret);
-            pending_msgs.drop(pend);
-            return false;
+            throw std::bad_alloc{};
         }
         pending_msgs.drop(pend);
         return true;
@@ -2044,10 +1878,8 @@ struct manager_activate_service {
         if (dinitctl_start_service_async(
             ctl, handle, false, false, async_cb, &pend
         ) < 0) {
-            /* we control the inputs so this is never recoverable */
-            warn("dinitctl_start_service_async");
-            pending_msgs.drop(pend);
-            dinitctl_abort(sctl, EBADMSG);
+            /* only ENOMEM is possible */
+            throw std::bad_alloc{};
         }
     }
 
@@ -2060,23 +1892,18 @@ struct manager_activate_service {
             return false;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
-        pend->data = const_cast<char *>(service_name);
-        pend->is_signal = TRUE;
+        auto &pend = pending_msgs.add(conn, msg);
+        pend.data = const_cast<char *>(service_name);
+        pend.is_signal = TRUE;
 
         int ret = dinitctl_load_service_async(
-            ctl, service_name, false, load_cb, pend
+            ctl, service_name, false, load_cb, &pend
         );
         if (ret < 0) {
             if (errno == EINVAL) {
-                return issue_failure(*pend, "Service name too long");
+                return issue_failure(pend, "Service name too long");
             }
-            warn("dinitctl_load_service_async");
-            pending_msgs.drop(*pend);
-            return false;
+            throw std::bad_alloc{};
         }
 
         return true;
@@ -2084,7 +1911,7 @@ struct manager_activate_service {
 };
 
 struct manager_create_ephemeral_service {
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char const *name;
         char const *contents;
         DBusMessage *retm;
@@ -2092,25 +1919,24 @@ struct manager_create_ephemeral_service {
         if (!msg_get_args(
             msg, DBUS_TYPE_STRING, &name, DBUS_TYPE_STRING, &contents
         )) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
+        auto &pend = pending_msgs.add(conn, msg);
 
         FILE *f = dinitctl_create_ephemeral_service(ctl, name);
         if (!f) {
-            bool ret = false;
             /* XXX: better error for EBADF? */
             if ((errno == ENOENT) || (errno == EBADF)) {
-                ret = msg_send_error(
+                msg_send_error(
                     conn, msg, DBUS_ERROR_FILE_NOT_FOUND, nullptr
                 );
+                pending_msgs.drop(pend);
+                return;
             }
-            pending_msgs.drop(*pend);
-            return ret;
+            /* FIXME this may be different errors */
+            throw std::bad_alloc{};
         }
 
         auto slen = std::strlen(contents);
@@ -2120,63 +1946,51 @@ struct manager_create_ephemeral_service {
             /* make sure to drop it first since it's incomplete */
             dinitctl_remove_ephemeral_service(ctl, name);
             /* then send a recoverable error */
-            bool ret = msg_send_error(
+            msg_send_error(
                 conn, msg, DBUS_ERROR_IO_ERROR, nullptr
             );
-            pending_msgs.drop(*pend);
-            return ret;
+            pending_msgs.drop(pend);
+            return;
         }
         std::fclose(f);
 
-        retm = msg_new_reply(ctl, *pend);
+        retm = msg_new_reply(pend);
         if (!retm) {
-            dinitctl_remove_ephemeral_service(ctl, name);
-            return false;
+            return;
         }
-        bool ret = send_reply(ctl, *pend, retm);
-        if (ret) {
-            pending_msgs.drop(*pend);
-        } else {
-            dinitctl_remove_ephemeral_service(ctl, name);
-        }
-        return ret;
+        send_reply(pend, retm);
     }
 };
 
 struct manager_remove_ephemeral_service {
-    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+    static void invoke(DBusConnection *conn, DBusMessage *msg) {
         char const *name;
         DBusMessage *retm;
 
         if (!msg_get_args(msg, DBUS_TYPE_STRING, &name)) {
-            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+            return;
         }
 
-        auto *pend = pending_msgs.add(conn, msg);
-        if (!pend) {
-            return false;
-        }
+        auto &pend = pending_msgs.add(conn, msg);
 
         if (dinitctl_remove_ephemeral_service(ctl, name) < 0) {
-            bool ret = false;
             if ((errno == ENOENT) || (errno == EBADF)) {
-                ret = msg_send_error(
+                msg_send_error(
                     conn, msg, DBUS_ERROR_FILE_NOT_FOUND, nullptr
                 );
+                pending_msgs.drop(pend);
+                return;
             }
-            pending_msgs.drop(*pend);
-            return ret;
+            /* FIXME this may be different errors */
+            throw std::bad_alloc{};
         }
 
-        retm = msg_new_reply(ctl, *pend);
+        retm = msg_new_reply(pend);
         if (!retm) {
-            return false;
+            return;
         }
-        bool ret = send_reply(ctl, *pend, retm);
-        if (ret) {
-            pending_msgs.drop(*pend);
-        }
-        return ret;
+        send_reply(pend, retm);
     }
 };
 
@@ -2256,22 +2070,22 @@ static void dinit_sv_event_cb(
         DBusMessageIter iter, siter;
         dbus_message_iter_init_append(ret, &iter);
         if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_UINT32, &ser)) {
-            goto container_err;
+            throw std::bad_alloc{};
         }
         if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &estr)) {
-            goto container_err;
+            throw std::bad_alloc{};
         }
         if (!dbus_message_iter_open_container(
             &iter, DBUS_TYPE_STRUCT, nullptr, &siter
         )) {
-            goto container_err;
+            throw std::bad_alloc{};
         }
         if (!append_status(*status, &siter)) {
             dbus_message_iter_abandon_container(&iter, &siter);
-            goto container_err;
+            throw std::bad_alloc{};
         }
         if (!dbus_message_iter_close_container(&iter, &siter)) {
-            goto container_err;
+            throw std::bad_alloc{};
         }
         if (!dbus_connection_send(pp->conn, ret, nullptr)) {
             pending_msgs.drop_at(prevp, *pp);
@@ -2280,11 +2094,6 @@ static void dinit_sv_event_cb(
             break;
         }
         pending_msgs.drop_at(prevp, *pp);
-        break;
-container_err:
-        pending_msgs.drop_at(prevp, *pp);
-        warnx("could not build event aguments");
-        dinitctl_abort(sctl, EBADMSG);
         break;
     }
 }
@@ -2309,66 +2118,62 @@ static void dinit_env_event_cb(
     DBusMessageIter iter;
     dbus_message_iter_init_append(ret, &iter);
     if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &env)) {
-        goto container_err;
+        throw std::bad_alloc{};
     }
     if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_BOOLEAN, &over)) {
-        goto container_err;
+        throw std::bad_alloc{};
     }
     if (!dbus_connection_send(conn, ret, nullptr)) {
         warnx("could not send event signal");
         dinitctl_abort(sctl, EBADMSG);
     }
-    return;
-container_err:
-    warnx("could not build event aguments");
-    dinitctl_abort(sctl, EBADMSG);
-    return;
 }
 
-static bool manager_method_call(
+static void manager_method_call(
     DBusConnection *conn, DBusMessage *msg, char const *memb
 ) {
     if (!std::strcmp(memb, "UnloadService")) {
-        return manager_unload_service::invoke(conn, msg);
+        manager_unload_service::invoke(conn, msg);
     } else if (!std::strcmp(memb, "StartService")) {
-        return manager_start_service::invoke(conn, msg);
+        manager_start_service::invoke(conn, msg);
     } else if (!std::strcmp(memb, "StopService")) {
-        return manager_stop_service::invoke(conn, msg);
+        manager_stop_service::invoke(conn, msg);
     } else if (!std::strcmp(memb, "WakeService")) {
-        return manager_wake_service::invoke(conn, msg);
+        manager_wake_service::invoke(conn, msg);
     } else if (!std::strcmp(memb, "ReleaseService")) {
-        return manager_release_service::invoke(conn, msg);
+        manager_release_service::invoke(conn, msg);
     } else if (!std::strcmp(memb, "UnpinService")) {
-        return manager_unpin_service::invoke(conn, msg);
+        manager_unpin_service::invoke(conn, msg);
     } else if (!std::strcmp(memb, "AddRemoveServiceDependency")) {
-        return manager_add_remove_dep::invoke(conn, msg);
+        manager_add_remove_dep::invoke(conn, msg);
     } else if (!std::strcmp(memb, "GetServiceDirectory")) {
-        return manager_get_service_dir::invoke(conn, msg);
+        manager_get_service_dir::invoke(conn, msg);
     } else if (!std::strcmp(memb, "GetServiceLog")) {
-        return manager_get_service_log::invoke(conn, msg);
+        manager_get_service_log::invoke(conn, msg);
     } else if (!std::strcmp(memb, "GetServiceStatus")) {
-        return manager_get_service_status::invoke(conn, msg);
+        manager_get_service_status::invoke(conn, msg);
     } else if (!std::strcmp(memb, "SetServiceTrigger")) {
-        return manager_set_service_trigger::invoke(conn, msg);
+        manager_set_service_trigger::invoke(conn, msg);
     } else if (!std::strcmp(memb, "SignalService")) {
-        return manager_signal_service::invoke(conn, msg);
+        manager_signal_service::invoke(conn, msg);
     } else if (!std::strcmp(memb, "ListServices")) {
-        return manager_list_services::invoke(conn, msg);
+        manager_list_services::invoke(conn, msg);
     } else if (!std::strcmp(memb, "SetEnvironment")) {
-        return manager_set_env::invoke(conn, msg);
+        manager_set_env::invoke(conn, msg);
     } else if (!std::strcmp(memb, "GetAllEnvironment")) {
-        return manager_get_all_env::invoke(conn, msg);
+        manager_get_all_env::invoke(conn, msg);
     } else if (!std::strcmp(memb, "Shutdown")) {
-        return manager_shutdown::invoke(conn, msg);
+        manager_shutdown::invoke(conn, msg);
     } else if (!std::strcmp(memb, "QueryServiceDirs")) {
-        return manager_query_dirs::invoke(conn, msg);
+        manager_query_dirs::invoke(conn, msg);
     } else if (!std::strcmp(memb, "CreateEphemeralService")) {
-        return manager_create_ephemeral_service::invoke(conn, msg);
+        manager_create_ephemeral_service::invoke(conn, msg);
     } else if (!std::strcmp(memb, "RemoveEphemeralService")) {
-        return manager_remove_ephemeral_service::invoke(conn, msg);
+        manager_remove_ephemeral_service::invoke(conn, msg);
+    } else {
+        /* unknown method */
+        msg_send_error(conn, msg, DBUS_ERROR_UNKNOWN_METHOD, nullptr);
     }
-    /* unknown method */
-    return msg_send_error(conn, msg, DBUS_ERROR_UNKNOWN_METHOD, nullptr);
 }
 
 struct sig_data {
@@ -2697,10 +2502,8 @@ int main(int argc, char **argv) {
 
     DBusObjectPathVTable vt;
     vt.message_function = [](
-        DBusConnection *conn, DBusMessage *msg, void *datap
+        DBusConnection *conn, DBusMessage *msg, void *
     ) {
-        bool *success = static_cast<bool *>(datap);
-
         if (strcmp(dbus_message_get_interface(msg), BUS_IFACE)) {
             /* we only support our own interface at the moment */
             return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -2711,10 +2514,7 @@ int main(int argc, char **argv) {
 
         switch (dbus_message_get_type(msg)) {
             case DBUS_MESSAGE_TYPE_METHOD_CALL:
-                if (!manager_method_call(conn, msg, memb)) {
-                    *success = false;
-                    return DBUS_HANDLER_RESULT_HANDLED;
-                }
+                manager_method_call(conn, msg, memb);
                 return DBUS_HANDLER_RESULT_HANDLED;
             case DBUS_MESSAGE_TYPE_SIGNAL:
             case DBUS_MESSAGE_TYPE_METHOD_RETURN:
@@ -2730,7 +2530,7 @@ int main(int argc, char **argv) {
     vt.unregister_function = nullptr;
 
     if (!dbus_connection_try_register_object_path(
-        conn, BUS_OBJ, &vt, &success, &dbus_err
+        conn, BUS_OBJ, &vt, nullptr, &dbus_err
     )) {
         errx(
             1, "dbus_connection_try_register_object_path failed (%s)",
