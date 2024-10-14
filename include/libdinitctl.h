@@ -433,7 +433,7 @@ DINITCTL_API int dinitctl_setup_ephemeral_directory(dinitctl *ctl);
 /** @brief Create an ephemeral service.
  *
  * This functions opens the file for writing if it can. The ephemeral
- * service directory must be previously set up, or it will fail with ENOENT.
+ * service directory must be previously set up, or it will fail with EBADF.
  *
  * Upon failure this returns NULL and sets errno.
  */
@@ -443,7 +443,7 @@ DINITCTL_API FILE *dinitctl_create_ephemeral_service(dinitctl *ctl, char const *
  *
  * This removes the file. It does not unload or stop the service. The
  * ephemeral service directory must be previously set up, or it will fail
- * with ENOENT.
+ * with EBADF.
  *
  * Upon failure this returns a negative value and sets errno.
  */

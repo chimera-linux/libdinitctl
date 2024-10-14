@@ -1038,7 +1038,7 @@ DINITCTL_API FILE *dinitctl_create_ephemeral_service(
     FILE *ret;
     int fd;
     if (ctl->tmp_fd < 0) {
-        errno = ENOENT;
+        errno = EBADF;
         return NULL;
     }
     errno = 0;
@@ -1061,7 +1061,7 @@ DINITCTL_API int dinitctl_remove_ephemeral_service(
     dinitctl *ctl, char const *svcname
 ) {
     if (ctl->tmp_fd < 0) {
-        errno = ENOENT;
+        errno = EBADF;
         return -1;
     }
     if (unlinkat(ctl->tmp_fd, svcname, 0) < 0) {

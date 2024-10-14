@@ -2109,7 +2109,8 @@ struct manager_create_ephemeral_service {
         FILE *f = dinitctl_create_ephemeral_service(ctl, name);
         if (!f) {
             bool ret = false;
-            if (errno == ENOENT) {
+            /* XXX: better error for EBADF? */
+            if ((errno == ENOENT) || (errno == EBADF)) {
                 ret = msg_send_error(
                     conn, msg, DBUS_ERROR_FILE_NOT_FOUND, nullptr
                 );
@@ -2156,7 +2157,7 @@ struct manager_remove_ephemeral_service {
 
         if (dinitctl_remove_ephemeral_service(ctl, name) < 0) {
             bool ret = false;
-            if (errno == ENOENT) {
+            if ((errno == ENOENT) || (errno == EBADF)) {
                 ret = msg_send_error(
                     conn, msg, DBUS_ERROR_FILE_NOT_FOUND, nullptr
                 );
