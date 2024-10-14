@@ -1049,6 +1049,7 @@ DINITCTL_API FILE *dinitctl_create_ephemeral_service(
     ret = fdopen(fd, "wb");
     if (!ret) {
         int serrno = errno;
+        unlinkat(ctl->tmp_fd, svcname, 0);
         close(fd);
         errno = serrno;
         return NULL;
