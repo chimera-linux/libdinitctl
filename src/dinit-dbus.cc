@@ -1275,7 +1275,6 @@ static bool append_status(
             return false;
         }
         if (!dbus_message_iter_close_container(&aiter, &diter)) {
-            dbus_message_iter_abandon_container(&aiter, &diter);
             return false;
         }
         return true;
@@ -1353,7 +1352,6 @@ static bool append_status(
         return false;
     }
     if (!dbus_message_iter_close_container(iter, &aiter)) {
-        dbus_message_iter_abandon_container(iter, &aiter);
         return false;
     }
     pid = dbus_uint32_t(status.pid);
@@ -1609,12 +1607,10 @@ struct manager_list_services {
                 goto container_err;
             }
             if (!dbus_message_iter_close_container(&aiter, &siter)) {
-                dbus_message_iter_abandon_container(&aiter, &siter);
                 goto container_err;
             }
         }
         if (!dbus_message_iter_close_container(&iter, &aiter)) {
-            dbus_message_iter_abandon_container(&iter, &aiter);
             goto container_err;
         }
         if (send_reply(sctl, pend, retm)) {
@@ -1782,7 +1778,6 @@ struct manager_get_all_env {
             bsize -= slen + 1;
         }
         if (!dbus_message_iter_close_container(&iter, &aiter)) {
-            dbus_message_iter_abandon_container(&iter, &aiter);
             goto container_err;
         }
         if (send_reply(sctl, pend, retm)) {
@@ -1898,7 +1893,6 @@ struct manager_query_dirs {
             goto container_err;
         }
         if (!dbus_message_iter_close_container(&iter, &aiter)) {
-            dbus_message_iter_abandon_container(&iter, &aiter);
             goto container_err;
         }
         if (send_reply(sctl, pend, retm)) {
@@ -2277,7 +2271,6 @@ static void dinit_sv_event_cb(
             goto container_err;
         }
         if (!dbus_message_iter_close_container(&iter, &siter)) {
-            dbus_message_iter_abandon_container(&iter, &siter);
             goto container_err;
         }
         if (!dbus_connection_send(pp->conn, ret, nullptr)) {
