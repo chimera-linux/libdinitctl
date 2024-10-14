@@ -2122,6 +2122,9 @@ struct manager_create_ephemeral_service {
         auto slen = std::strlen(contents);
 
         if (fwrite(contents, 1, slen, f) != slen) {
+            /* make sure to drop it first since it's incomplete */
+            dinitctl_remove_ephemeral_service(ctl, name);
+            /* then send a recoverable error */
             bool ret = msg_send_error(
                 conn, msg, DBUS_ERROR_IO_ERROR, nullptr
             );
@@ -2131,11 +2134,14 @@ struct manager_create_ephemeral_service {
 
         retm = msg_new_reply(ctl, *pend);
         if (!retm) {
+            dinitctl_remove_ephemeral_service(ctl, name);
             return false;
         }
         bool ret = send_reply(ctl, *pend, retm);
         if (ret) {
             pending_msgs.drop(*pend);
+        } else {
+            dinitctl_remove_ephemeral_service(ctl, name);
         }
         return ret;
     }
