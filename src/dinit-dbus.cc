@@ -2140,6 +2140,43 @@ struct manager_create_ephemeral_service {
     }
 };
 
+struct manager_remove_ephemeral_service {
+    static bool invoke(DBusConnection *conn, DBusMessage *msg) {
+        char const *name;
+        DBusMessage *retm;
+
+        if (!msg_get_args(msg, DBUS_TYPE_STRING, &name)) {
+            return msg_send_error(conn, msg, DBUS_ERROR_INVALID_ARGS, nullptr);
+        }
+
+        auto *pend = pending_msgs.add(conn, msg);
+        if (!pend) {
+            return false;
+        }
+
+        if (dinitctl_remove_ephemeral_service(ctl, name) < 0) {
+            bool ret = false;
+            if (errno == ENOENT) {
+                ret = msg_send_error(
+                    conn, msg, DBUS_ERROR_FILE_NOT_FOUND, nullptr
+                );
+            }
+            pending_msgs.drop(*pend);
+            return ret;
+        }
+
+        retm = msg_new_reply(ctl, *pend);
+        if (!retm) {
+            return false;
+        }
+        bool ret = send_reply(ctl, *pend, retm);
+        if (ret) {
+            pending_msgs.drop(*pend);
+        }
+        return ret;
+    }
+};
+
 static void dinit_sv_event_cb(
     dinitctl *sctl,
     dinitctl_service_handle *handle,
@@ -2325,6 +2362,8 @@ static bool manager_method_call(
         return manager_query_dirs::invoke(conn, msg);
     } else if (!std::strcmp(memb, "CreateEphemeralService")) {
         return manager_create_ephemeral_service::invoke(conn, msg);
+    } else if (!std::strcmp(memb, "RemoveEphemeralService")) {
+        return manager_remove_ephemeral_service::invoke(conn, msg);
     }
     /* unknown method */
     return msg_send_error(conn, msg, DBUS_ERROR_UNKNOWN_METHOD, nullptr);

@@ -1056,6 +1056,19 @@ DINITCTL_API FILE *dinitctl_create_ephemeral_service(
     return ret;
 }
 
+DINITCTL_API int dinitctl_remove_ephemeral_service(
+    dinitctl *ctl, char const *svcname
+) {
+    if (ctl->tmp_fd < 0) {
+        errno = ENOENT;
+        return -1;
+    }
+    if (unlinkat(ctl->tmp_fd, svcname, 0) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
 struct load_service_ret {
     dinitctl_service_handle **handle;
     enum dinitctl_service_state *state;
