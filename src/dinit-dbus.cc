@@ -79,6 +79,7 @@
 #define ACTIVATOR_ERROR BUS_ERROR_NS ACTIVATOR_FAILURE
 
 struct unrecoverable_error {
+    char const *str;
     int errno_val;
 };
 
@@ -490,7 +491,7 @@ struct pending_msg {
             dinitctl_close_service_handle_finish(sctl);
         };
         if (dinitctl_close_service_handle_async(ctl, h, close_cb, nullptr) < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_close_service_handle_async", errno};
         }
         h = nullptr;
     }
@@ -529,7 +530,7 @@ struct msg_list {
     pending_msg *reserve_chunk() {
         chunk *chk = static_cast<chunk *>(calloc(1, sizeof(chunk)));
         if (!chk) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"pending_msg calloc", errno};
         }
         for (std::size_t i = 0; i < (chksize - 1); ++i) {
             new (&chk->msg[i]) pending_msg{};
@@ -598,7 +599,7 @@ template<typename ...A>
 static bool msg_get_args(DBusMessage *msg, A const &...args) {
     if (!dbus_message_get_args(msg, &dbus_err, args..., DBUS_TYPE_INVALID)) {
         if (dbus_error_has_name(&dbus_err, DBUS_ERROR_NO_MEMORY)) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_get_args", ENOMEM};
         }
         dbus_error_free(&dbus_err);
         return false;
@@ -627,7 +628,7 @@ static void msg_send_error(
         if (ret) {
             dbus_message_unref(ret);
         }
-        throw std::bad_alloc{};
+        throw unrecoverable_error{"msg_send_error", ENOMEM};
     }
     dbus_message_unref(ret);
 }
@@ -646,20 +647,20 @@ static DBusMessage *msg_new_reply(pending_msg &pend) {
     }
     DBusMessage *retm = dbus_message_new_method_return(pend.msg);
     if (!retm) {
-        throw std::bad_alloc{};
+        throw unrecoverable_error{"dbus_message_new_method_return", ENOMEM};
     }
     return retm;
 }
 
 static bool check_error(pending_msg &pend, int ret) {
     if (ret < 0) {
-        throw unrecoverable_error{errno};
+        throw unrecoverable_error{"dinitctl_*_finish", errno};
     } else if (!ret) {
         return true;
     }
     auto *err = enum_to_str(ret, error_str, sizeof(error_str), nullptr);
     if (!err) {
-        throw unrecoverable_error{EINVAL};
+        throw unrecoverable_error{"enum_to_str", EINVAL};
     }
     msg_reply_error(pend, err, nullptr);
     return false;
@@ -667,7 +668,7 @@ static bool check_error(pending_msg &pend, int ret) {
 
 static void send_reply(pending_msg &pend, DBusMessage *retm) {
     if (!dbus_connection_send(pend.conn, retm, nullptr)) {
-        throw std::bad_alloc{};
+        throw unrecoverable_error{"dbus_connection_send", ENOMEM};
     }
     dbus_message_unref(retm);
     pending_msgs.drop(pend);
@@ -682,7 +683,7 @@ static void call_load_service(
             msg_reply_error(pend, DBUS_ERROR_INVALID_ARGS, nullptr);
             return;
         }
-        throw unrecoverable_error{errno};
+        throw unrecoverable_error{"dinitctl_load_service_async", errno};
     }
 }
 
@@ -710,7 +711,7 @@ struct manager_unload_service {
         if (dinitctl_unload_service_async(
             ctl, handle, pend.reload, async_cb, &pend
         ) < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_unload_service_async", errno};
         }
     }
 
@@ -745,7 +746,7 @@ struct manager_start_service {
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_UINT32, &ser, DBUS_TYPE_INVALID
         )) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_append_args", ENOMEM};
         }
         send_reply(pend, retm);
     }
@@ -761,7 +762,7 @@ struct manager_start_service {
         if (dinitctl_start_service_async(
             ctl, handle, pend.pin, false, async_cb, &pend
         ) < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_start_service_async", errno};
         }
     }
 
@@ -795,7 +796,7 @@ struct manager_stop_service {
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_UINT32, &ser, DBUS_TYPE_INVALID
         )) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_append_args", ENOMEM};
         }
         send_reply(pend, retm);
     }
@@ -811,7 +812,7 @@ struct manager_stop_service {
         if (dinitctl_stop_service_async(
             ctl, handle, pend.pin, pend.reload, pend.gentle, false, async_cb, &pend
         ) < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_stop_service_async", errno};
         }
     }
 
@@ -851,7 +852,7 @@ struct manager_wake_service {
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_UINT32, &ser, DBUS_TYPE_INVALID
         )) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_append_args", ENOMEM};
         }
         send_reply(pend, retm);
     }
@@ -867,7 +868,7 @@ struct manager_wake_service {
         if (dinitctl_wake_service_async(
             ctl, handle, pend.pin, false, async_cb, &pend
         ) < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_wake_service_async", errno};
         }
     }
 
@@ -901,7 +902,7 @@ struct manager_release_service {
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_UINT32, &ser, DBUS_TYPE_INVALID
         )) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_append_args", ENOMEM};
         }
         send_reply(pend, retm);
     }
@@ -917,7 +918,7 @@ struct manager_release_service {
         if (dinitctl_release_service_async(
             ctl, handle, pend.pin, false, async_cb, &pend
         ) < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_release_service_async", errno};
         }
     }
 
@@ -959,7 +960,7 @@ struct manager_unpin_service {
         }
         pend.handle = handle;
         if (dinitctl_unpin_service_async(ctl, handle, async_cb, &pend) < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_unpin_service_async", errno};
         }
     }
 
@@ -1009,7 +1010,9 @@ struct manager_add_remove_dep {
             ctl, pend.handle, handle, dinitctl_dependency_type(pend.type),
             pend.remove, pend.enable, async_cb, &pend
         ) < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{
+                "dinitctl_add_remove_service_dependency_async", errno
+            };
         }
     }
 
@@ -1061,7 +1064,7 @@ struct manager_get_service_dir {
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_STRING, &dir, DBUS_TYPE_INVALID
         )) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_append_args", ENOMEM};
         }
         std::free(dir);
         send_reply(pend, retm);
@@ -1078,7 +1081,7 @@ struct manager_get_service_dir {
         if (dinitctl_get_service_directory_async(
             ctl, handle, async_cb, &pend
         ) < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_get_service_directory_async", errno};
         }
     }
 
@@ -1108,7 +1111,7 @@ struct manager_get_service_log {
         if (!dbus_message_append_args(
             retm, DBUS_TYPE_STRING, &log, DBUS_TYPE_INVALID
         )) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_append_args", ENOMEM};
         }
         std::free(log);
         send_reply(pend, retm);
@@ -1125,7 +1128,7 @@ struct manager_get_service_log {
         if (dinitctl_get_service_log_async(
             ctl, handle, pend.remove, async_cb, &pend
         ) < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_get_service_log_async", errno};
         }
     }
 
@@ -1284,14 +1287,14 @@ struct manager_get_service_status {
         if (!dbus_message_iter_open_container(
             &iter, DBUS_TYPE_STRUCT, nullptr, &siter
         )) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_iter_open_container", ENOMEM};
         }
         if (!append_status(status, &siter)) {
             dbus_message_iter_abandon_container(&iter, &siter);
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"append_status", ENOMEM};
         }
         if (!dbus_message_iter_close_container(&iter, &siter)) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_iter_close_container", ENOMEM};
         }
         send_reply(pend, retm);
     }
@@ -1307,7 +1310,7 @@ struct manager_get_service_status {
         if (dinitctl_get_service_status_async(
             ctl, handle, async_cb, &pend
         ) < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_get_service_status_async", errno};
         }
     }
 
@@ -1346,7 +1349,7 @@ struct manager_set_service_trigger {
         if (dinitctl_set_service_trigger_async(
             ctl, handle, pend.enable, async_cb, &pend
         ) < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_set_service_trigger_async", errno};
         }
     }
 
@@ -1390,7 +1393,7 @@ struct manager_signal_service {
         if (dinitctl_signal_service_async(
             ctl, handle, pend.type, async_cb, &pend
         ) < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_signal_service_async", errno};
         }
     }
 
@@ -1448,7 +1451,7 @@ struct manager_list_services {
             &aiter
         )) {
             std::free(entries);
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_iter_open_container", ENOMEM};
         }
         for (ssize_t i = 0; i < len; ++i) {
             DBusMessageIter siter;
@@ -1456,28 +1459,28 @@ struct manager_list_services {
                 &aiter, DBUS_TYPE_STRUCT, nullptr, &siter
             )) {
                 std::free(entries);
-                throw std::bad_alloc{};
+                throw unrecoverable_error{"dbus_message_iter_open_container", ENOMEM};
             }
             char const *nstr = entries[i].name;
             if (!dbus_message_iter_append_basic(&siter, DBUS_TYPE_STRING, &nstr)) {
                 dbus_message_iter_abandon_container(&aiter, &siter);
                 std::free(entries);
-                throw std::bad_alloc{};
+                throw unrecoverable_error{"dbus_message_iter_append_basic", ENOMEM};
             }
             /* now just append status, easy */
             if (!append_status(entries[i].status, &siter)) {
                 dbus_message_iter_abandon_container(&aiter, &siter);
                 std::free(entries);
-                throw std::bad_alloc{};
+                throw unrecoverable_error{"append_status", ENOMEM};
             }
             if (!dbus_message_iter_close_container(&aiter, &siter)) {
                 std::free(entries);
-                throw std::bad_alloc{};
+                throw unrecoverable_error{"dbus_message_iter_close_container", ENOMEM};
             }
         }
         if (!dbus_message_iter_close_container(&iter, &aiter)) {
                 std::free(entries);
-                throw std::bad_alloc{};
+                throw unrecoverable_error{"dbus_message_iter_close_container", ENOMEM};
         }
         send_reply(pend, retm);
         std::free(entries);
@@ -1489,7 +1492,7 @@ struct manager_list_services {
         auto &pend = pending_msgs.add(conn, msg);
         int ret = dinitctl_list_services_async(ctl, async_cb, &pend);
         if (ret < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_list_services_async", errno};
         }
     }
 };
@@ -1522,7 +1525,7 @@ struct manager_set_env {
             if (errno == EINVAL) {
                 msg_reply_error(pend, DBUS_ERROR_INVALID_ARGS, nullptr);
             } else {
-                throw unrecoverable_error{errno};
+                throw unrecoverable_error{"dinitctl_(un)setenv_async", errno};
             }
             return;
         }
@@ -1551,7 +1554,7 @@ struct manager_set_env {
             DBusMessage *retm = dbus_message_new_method_return(msg);
             if (!retm || !dbus_connection_send(conn, retm, nullptr)) {
                 dbus_free_string_array(envs);
-                throw std::bad_alloc{};
+                throw unrecoverable_error{"setenv reply", ENOMEM};
             }
             dbus_message_unref(retm);
             return;
@@ -1566,7 +1569,7 @@ struct manager_set_env {
                 msg_reply_error(pend, DBUS_ERROR_INVALID_ARGS, nullptr);
                 return;
             }
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_(un)setenv_async", errno};
         }
     }
 };
@@ -1591,11 +1594,11 @@ struct manager_get_all_env {
             &iter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING, &aiter
         )) {
             std::free(vars);
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_iter_open_container", ENOMEM};
         }
         for (char *curvar = vars; bsize;) {
             if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &curvar)) {
-                throw std::bad_alloc{};
+                throw unrecoverable_error{"dbus_message_iter_append_basic", ENOMEM};
             }
             auto slen = std::strlen(curvar);
             curvar += slen + 1;
@@ -1603,7 +1606,7 @@ struct manager_get_all_env {
         }
         if (!dbus_message_iter_close_container(&iter, &aiter)) {
             std::free(vars);
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_iter_close_container", ENOMEM};
         }
         send_reply(pend, retm);
         std::free(vars);
@@ -1615,7 +1618,7 @@ struct manager_get_all_env {
         auto &pend = pending_msgs.add(conn, msg);
         int ret = dinitctl_get_all_env_async(ctl, async_cb, &pend);
         if (ret < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_get_all_env_async", errno};
         }
     }
 };
@@ -1656,7 +1659,7 @@ struct manager_shutdown {
                 msg_reply_error(pend, DBUS_ERROR_INVALID_ARGS, nullptr);
                 return;
             }
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_shutdown_async", errno};
         }
     }
 };
@@ -1681,18 +1684,18 @@ struct manager_query_dirs {
             &iter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING, &aiter
         )) {
             std::free(dirs);
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_iter_open_container", ENOMEM};
         }
         if (!dbus_message_iter_append_fixed_array(
             &aiter, DBUS_TYPE_STRING, &dirs, int(ndirs)
         )) {
             dbus_message_iter_abandon_container(&iter, &aiter);
             std::free(dirs);
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_iter_append_fixed_array", ENOMEM};
         }
         if (!dbus_message_iter_close_container(&iter, &aiter)) {
             std::free(dirs);
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_iter_close_container", ENOMEM};
         }
         send_reply(pend, retm);
         std::free(dirs);
@@ -1704,7 +1707,7 @@ struct manager_query_dirs {
         auto &pend = pending_msgs.add(conn, msg);
         int ret = dinitctl_query_service_dirs_async(ctl, async_cb, &pend);
         if (ret < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_query_service_dirs_async", errno};
         }
     }
 };
@@ -1715,7 +1718,7 @@ struct manager_activate_service {
             BUS_OBJ, ACTIVATOR_IFACE, ACTIVATOR_FAILURE
         );
         if (!ret) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_new_signal", ENOMEM};
         }
         char const *service_name = static_cast<char *>(pend.data);
         char const *errname = ACTIVATOR_ERROR;
@@ -1726,14 +1729,12 @@ struct manager_activate_service {
             DBUS_TYPE_STRING, &reason,
             DBUS_TYPE_INVALID
         )) {
-            warnx("failed to append activation failure args");
             dbus_message_unref(ret);
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_append_args", ENOMEM};
         }
         if (!dbus_message_set_destination(ret, ACTIVATOR_DEST)) {
-            warnx("failed set failure destination");
             dbus_message_unref(ret);
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_set_destination", ENOMEM};
         }
         send_reply(pend, ret);
     }
@@ -1772,7 +1773,7 @@ struct manager_activate_service {
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_load_service_finish(sctl, &handle, nullptr, nullptr);
         if (ret < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_load_service_finish", errno};
         }
 
         char const *reason = nullptr;
@@ -1801,7 +1802,7 @@ struct manager_activate_service {
         if (dinitctl_start_service_async(
             ctl, handle, false, false, async_cb, &pend
         ) < 0) {
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_start_service_async", errno};
         }
     }
 
@@ -1826,7 +1827,7 @@ struct manager_activate_service {
                 issue_failure(pend, "Service name too long");
                 return;
             }
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_load_service_async", errno};
         }
     }
 };
@@ -1850,7 +1851,7 @@ struct manager_create_ephemeral_service {
                 msg_reply_error(pend, DBUS_ERROR_FILE_NOT_FOUND, nullptr);
                 return;
             }
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_create_ephemeral_service", errno};
         }
 
         auto slen = std::strlen(contents);
@@ -1887,7 +1888,7 @@ struct manager_remove_ephemeral_service {
                 msg_reply_error(pend, DBUS_ERROR_FILE_NOT_FOUND, nullptr);
                 return;
             }
-            throw unrecoverable_error{errno};
+            throw unrecoverable_error{"dinitctl_remove_ephemeral_service", errno};
         }
 
         retm = msg_new_reply(pend);
@@ -1963,31 +1964,31 @@ static void dinit_sv_event_cb(
             BUS_OBJ, BUS_IFACE, "ServiceEvent"
         );
         if (!ret) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_new_signal", ENOMEM};
         }
         dbus_uint32_t ser = dbus_message_get_serial(pp->msg);
         DBusMessageIter iter, siter;
         dbus_message_iter_init_append(ret, &iter);
         if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_UINT32, &ser)) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_iter_append_basic", ENOMEM};
         }
         if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &estr)) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_iter_append_basic", ENOMEM};
         }
         if (!dbus_message_iter_open_container(
             &iter, DBUS_TYPE_STRUCT, nullptr, &siter
         )) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_iter_open_container", ENOMEM};
         }
         if (!append_status(*status, &siter)) {
             dbus_message_iter_abandon_container(&iter, &siter);
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"append_status", ENOMEM};
         }
         if (!dbus_message_iter_close_container(&iter, &siter)) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_message_iter_close_container", ENOMEM};
         }
         if (!dbus_connection_send(pp->conn, ret, nullptr)) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{"dbus_connection_send", ENOMEM};
         }
         pending_msgs.drop_at(prevp, *pp);
         break;
@@ -2006,19 +2007,19 @@ static void dinit_env_event_cb(
         BUS_OBJ, BUS_IFACE, "EnvironmentEvent"
     );
     if (!ret) {
-        throw std::bad_alloc{};
+        throw unrecoverable_error{"dbus_message_new_signal", ENOMEM};
     }
     dbus_bool_t over = (flags != 0);
     DBusMessageIter iter;
     dbus_message_iter_init_append(ret, &iter);
     if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &env)) {
-        throw std::bad_alloc{};
+        throw unrecoverable_error{"dbus_message_iter_append_basic", ENOMEM};
     }
     if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_BOOLEAN, &over)) {
-        throw std::bad_alloc{};
+        throw unrecoverable_error{"dbus_message_iter_append_basic", ENOMEM};
     }
     if (!dbus_connection_send(conn, ret, nullptr)) {
-        throw std::bad_alloc{};
+        throw unrecoverable_error{"dbus_connection_send", ENOMEM};
     }
 }
 
@@ -2093,8 +2094,7 @@ static void dbus_main(DBusConnection *conn) {
             if (errno == EINTR) {
                 continue;
             }
-            warn("poll failed");
-            return;
+            throw unrecoverable_error{"poll", errno};
         } else if (pret == 0) {
             continue;
         }
@@ -2102,8 +2102,7 @@ static void dbus_main(DBusConnection *conn) {
         if (fds[0].revents == POLLIN) {
             sig_data sigd;
             if (read(fds[0].fd, &sigd, sizeof(sigd)) != sizeof(sigd)) {
-                warn("signal read failed");
-                return;
+                throw unrecoverable_error{"signal read", errno};
             }
             switch (sigd.sign) {
                 case SIGTERM:
@@ -2112,8 +2111,7 @@ static void dbus_main(DBusConnection *conn) {
                     break;
                 case SIGALRM: {
                     if (!static_cast<timer *>(sigd.data)->handle()) {
-                        warnx("timeout handle failed");
-                        return;
+                        throw unrecoverable_error{"timeout handle", errno};
                     }
                 }
                 default:
@@ -2135,8 +2133,7 @@ static void dbus_main(DBusConnection *conn) {
                     continue;
                 }
                 if (!w.handle(fds[i])) {
-                    warnx("watch handle failed");
-                    return;
+                    throw unrecoverable_error{"watch handle", errno};
                 }
                 break;
             }
@@ -2162,8 +2159,7 @@ do_dispatch:
                 if (errno == EINTR) {
                     continue;
                 }
-                warn("dinitctl_dispatch failed");
-                return;
+                throw unrecoverable_error{"dinitctl_dispatch", errno};
             } else if (!nev) {
                 break;
             }
@@ -2417,13 +2413,16 @@ int main(int argc, char **argv) {
     }
 
     int ret = 0;
+    char const *errmsg = nullptr;
 
     /* run the main loop; simplify out-of-memory scenarios */
     try {
         dbus_main(conn);
     } catch (std::bad_alloc const &) {
         ret = ENOMEM;
+        errmsg = "stdlib";
     } catch (unrecoverable_error const &e) {
+        errmsg = e.str;
         ret = e.errno_val;
     }
 
@@ -2441,7 +2440,7 @@ int main(int argc, char **argv) {
 
     if (ret) {
         errno = ret;
-        err(1, "dbus_main");
+        err(1, "dbus_main: %s", errmsg);
     }
     return 0;
 }
