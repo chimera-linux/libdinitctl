@@ -78,6 +78,10 @@
 #define ACTIVATOR_FAILURE "ActivationFailure"
 #define ACTIVATOR_ERROR BUS_ERROR_NS ACTIVATOR_FAILURE
 
+struct unrecoverable_error {
+    int errno_val;
+};
+
 static inline bool check_arrbounds(int v, std::size_t tv) {
     return (v >= 0) && (std::size_t(v) < (tv / sizeof(void *)));
 }
@@ -486,7 +490,7 @@ struct pending_msg {
             dinitctl_close_service_handle_finish(sctl);
         };
         if (dinitctl_close_service_handle_async(ctl, h, close_cb, nullptr) < 0) {
-            dinitctl_abort(ctl, EBADMSG);
+            throw unrecoverable_error{errno};
         }
         h = nullptr;
     }
@@ -647,24 +651,18 @@ static DBusMessage *msg_new_reply(pending_msg &pend) {
     return retm;
 }
 
-static bool check_error(dinitctl *sctl, pending_msg &pend, int ret) {
+static bool check_error(pending_msg &pend, int ret) {
     if (ret < 0) {
-        if (errno == ENOMEM) throw std::bad_alloc{};
-        dinitctl_abort(sctl, errno);
-        pending_msgs.drop(pend);
-        return false;
-    } else if (ret) {
-        auto *err = enum_to_str(ret, error_str, sizeof(error_str), nullptr);
-        if (!err) {
-            warn("unknown dinitctl error");
-            dinitctl_abort(sctl, EBADMSG);
-        } else {
-            msg_send_error(pend.conn, pend.msg, err, nullptr);
-        }
-        pending_msgs.drop(pend);
-        return false;
+        throw unrecoverable_error{errno};
+    } else if (!ret) {
+        return true;
     }
-    return true;
+    auto *err = enum_to_str(ret, error_str, sizeof(error_str), nullptr);
+    if (!err) {
+        throw unrecoverable_error{EINVAL};
+    }
+    msg_reply_error(pend, err, nullptr);
+    return false;
 }
 
 static void send_reply(pending_msg &pend, DBusMessage *retm) {
@@ -684,8 +682,7 @@ static void call_load_service(
             msg_reply_error(pend, DBUS_ERROR_INVALID_ARGS, nullptr);
             return;
         }
-        /* only other error is ENOMEM */
-        throw std::bad_alloc{};
+        throw unrecoverable_error{errno};
     }
 }
 
@@ -693,7 +690,7 @@ struct manager_unload_service {
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_unload_service_finish(sctl);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         DBusMessage *retm = msg_new_reply(pend);
@@ -707,14 +704,13 @@ struct manager_unload_service {
         dinitctl_service_handle *handle;
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_load_service_finish(sctl, &handle, nullptr, nullptr);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         if (dinitctl_unload_service_async(
             ctl, handle, pend.reload, async_cb, &pend
         ) < 0) {
-            /* only ENOMEM is possible */
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 
@@ -738,7 +734,7 @@ struct manager_start_service {
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_start_service_finish(sctl, NULL);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         DBusMessage *retm = msg_new_reply(pend);
@@ -758,15 +754,14 @@ struct manager_start_service {
         dinitctl_service_handle *handle;
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_load_service_finish(sctl, &handle, nullptr, nullptr);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         pend.handle = handle;
         if (dinitctl_start_service_async(
             ctl, handle, pend.pin, false, async_cb, &pend
         ) < 0) {
-            /* only ENOMEM is possible */
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 
@@ -789,7 +784,7 @@ struct manager_stop_service {
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_stop_service_finish(sctl, NULL);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         DBusMessage *retm = msg_new_reply(pend);
@@ -809,15 +804,14 @@ struct manager_stop_service {
         dinitctl_service_handle *handle;
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_load_service_finish(sctl, &handle, nullptr, nullptr);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         pend.handle = handle;
         if (dinitctl_stop_service_async(
             ctl, handle, pend.pin, pend.reload, pend.gentle, false, async_cb, &pend
         ) < 0) {
-            /* only ENOMEM is possible */
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 
@@ -846,7 +840,7 @@ struct manager_wake_service {
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_wake_service_finish(sctl, NULL);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         DBusMessage *retm = msg_new_reply(pend);
@@ -866,15 +860,14 @@ struct manager_wake_service {
         dinitctl_service_handle *handle;
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_load_service_finish(sctl, &handle, nullptr, nullptr);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         pend.handle = handle;
         if (dinitctl_wake_service_async(
             ctl, handle, pend.pin, false, async_cb, &pend
         ) < 0) {
-            /* only ENOMEM is possible */
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 
@@ -897,7 +890,7 @@ struct manager_release_service {
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_release_service_finish(sctl, NULL);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         DBusMessage *retm = msg_new_reply(pend);
@@ -917,15 +910,14 @@ struct manager_release_service {
         dinitctl_service_handle *handle;
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_load_service_finish(sctl, &handle, nullptr, nullptr);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         pend.handle = handle;
         if (dinitctl_release_service_async(
             ctl, handle, pend.pin, false, async_cb, &pend
         ) < 0) {
-            /* only ENOMEM is possible */
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 
@@ -948,7 +940,7 @@ struct manager_unpin_service {
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_unpin_service_finish(sctl);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         DBusMessage *retm = msg_new_reply(pend);
@@ -962,13 +954,12 @@ struct manager_unpin_service {
         dinitctl_service_handle *handle;
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_load_service_finish(sctl, &handle, nullptr, nullptr);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         pend.handle = handle;
         if (dinitctl_unpin_service_async(ctl, handle, async_cb, &pend) < 0) {
-            /* only ENOMEM is possible */
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 
@@ -986,7 +977,7 @@ struct manager_add_remove_dep {
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_add_remove_service_dependency_finish(sctl);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         DBusMessage *retm = msg_new_reply(pend);
@@ -1002,7 +993,7 @@ struct manager_add_remove_dep {
         auto *to_name = static_cast<char const *>(pend.data);
 
         int ret = dinitctl_load_service_finish(sctl, &handle, nullptr, nullptr);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
 
@@ -1018,8 +1009,7 @@ struct manager_add_remove_dep {
             ctl, pend.handle, handle, dinitctl_dependency_type(pend.type),
             pend.remove, pend.enable, async_cb, &pend
         ) < 0) {
-            /* only ENOMEM is possible */
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 
@@ -1061,7 +1051,7 @@ struct manager_get_service_dir {
         ssize_t len = -1;
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_get_service_directory_finish(sctl, &dir, &len);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         DBusMessage *retm = msg_new_reply(pend);
@@ -1081,15 +1071,14 @@ struct manager_get_service_dir {
         dinitctl_service_handle *handle;
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_load_service_finish(sctl, &handle, nullptr, nullptr);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         pend.handle = handle;
         if (dinitctl_get_service_directory_async(
             ctl, handle, async_cb, &pend
         ) < 0) {
-            /* only ENOMEM is possible */
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 
@@ -1109,7 +1098,7 @@ struct manager_get_service_log {
         ssize_t len = -1;
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_get_service_log_finish(sctl, &log, &len);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         DBusMessage *retm = msg_new_reply(pend);
@@ -1129,15 +1118,14 @@ struct manager_get_service_log {
         dinitctl_service_handle *handle;
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_load_service_finish(sctl, &handle, nullptr, nullptr);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         pend.handle = handle;
         if (dinitctl_get_service_log_async(
             ctl, handle, pend.remove, async_cb, &pend
         ) < 0) {
-            /* only ENOMEM is possible */
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 
@@ -1283,7 +1271,7 @@ struct manager_get_service_status {
         auto &pend = *static_cast<pending_msg *>(data);
 
         int ret = dinitctl_get_service_status_finish(sctl, &status);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
 
@@ -1312,15 +1300,14 @@ struct manager_get_service_status {
         dinitctl_service_handle *handle;
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_load_service_finish(sctl, &handle, nullptr, nullptr);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         pend.handle = handle;
         if (dinitctl_get_service_status_async(
             ctl, handle, async_cb, &pend
         ) < 0) {
-            /* only ENOMEM is possible */
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 
@@ -1338,7 +1325,7 @@ struct manager_set_service_trigger {
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_set_service_trigger_finish(sctl);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         DBusMessage *retm = msg_new_reply(pend);
@@ -1352,15 +1339,14 @@ struct manager_set_service_trigger {
         dinitctl_service_handle *handle;
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_load_service_finish(sctl, &handle, nullptr, nullptr);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         pend.handle = handle;
         if (dinitctl_set_service_trigger_async(
             ctl, handle, pend.enable, async_cb, &pend
         ) < 0) {
-            /* only ENOMEM is possible */
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 
@@ -1383,7 +1369,7 @@ struct manager_signal_service {
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_signal_service_finish(sctl);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         DBusMessage *retm = msg_new_reply(pend);
@@ -1397,15 +1383,14 @@ struct manager_signal_service {
         dinitctl_service_handle *handle;
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_load_service_finish(sctl, &handle, nullptr, nullptr);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         pend.handle = handle;
         if (dinitctl_signal_service_async(
             ctl, handle, pend.type, async_cb, &pend
         ) < 0) {
-            /* only ENOMEM is possible */
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 
@@ -1430,7 +1415,7 @@ struct manager_list_services {
         dinitctl_service_list_entry *entries;
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_list_services_finish(sctl, &entries, &len);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         DBusMessage *retm = msg_new_reply(pend);
@@ -1504,7 +1489,7 @@ struct manager_list_services {
         auto &pend = pending_msgs.add(conn, msg);
         int ret = dinitctl_list_services_async(ctl, async_cb, &pend);
         if (ret < 0) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 };
@@ -1524,7 +1509,7 @@ struct manager_set_env {
         auto &pend = *static_cast<pending_msg *>(data);
         /* same underlying message, simplify things for ourselves... */
         int ret = dinitctl_setenv_finish(sctl);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         if (++pend.idx < pend.type) {
@@ -1537,8 +1522,7 @@ struct manager_set_env {
             if (errno == EINVAL) {
                 msg_reply_error(pend, DBUS_ERROR_INVALID_ARGS, nullptr);
             } else {
-                /* only ENOMEM is possible */
-                throw std::bad_alloc{};
+                throw unrecoverable_error{errno};
             }
             return;
         }
@@ -1582,7 +1566,7 @@ struct manager_set_env {
                 msg_reply_error(pend, DBUS_ERROR_INVALID_ARGS, nullptr);
                 return;
             }
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 };
@@ -1593,7 +1577,7 @@ struct manager_get_all_env {
         char *vars;
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_get_all_env_finish(sctl, &vars, &bsize);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         DBusMessage *retm = msg_new_reply(pend);
@@ -1631,7 +1615,7 @@ struct manager_get_all_env {
         auto &pend = pending_msgs.add(conn, msg);
         int ret = dinitctl_get_all_env_async(ctl, async_cb, &pend);
         if (ret < 0) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 };
@@ -1640,7 +1624,7 @@ struct manager_shutdown {
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_shutdown_finish(sctl);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         DBusMessage *retm = msg_new_reply(pend);
@@ -1672,7 +1656,7 @@ struct manager_shutdown {
                 msg_reply_error(pend, DBUS_ERROR_INVALID_ARGS, nullptr);
                 return;
             }
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 };
@@ -1683,7 +1667,7 @@ struct manager_query_dirs {
         char **dirs;
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_query_service_dirs_finish(sctl, &dirs, &ndirs);
-        if (!check_error(sctl, pend, ret)) {
+        if (!check_error(pend, ret)) {
             return;
         }
         DBusMessage *retm = msg_new_reply(pend);
@@ -1720,7 +1704,7 @@ struct manager_query_dirs {
         auto &pend = pending_msgs.add(conn, msg);
         int ret = dinitctl_query_service_dirs_async(ctl, async_cb, &pend);
         if (ret < 0) {
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 };
@@ -1751,23 +1735,12 @@ struct manager_activate_service {
             dbus_message_unref(ret);
             throw std::bad_alloc{};
         }
-        if (!dbus_connection_send(pend.conn, ret, nullptr)) {
-            warnx("failed to send activation failure");
-            dbus_message_unref(ret);
-            throw std::bad_alloc{};
-        }
-        pending_msgs.drop(pend);
+        send_reply(pend, ret);
     }
 
     static void async_cb(dinitctl *sctl, void *data) {
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_start_service_finish(sctl, NULL);
-
-        if (ret < 0) {
-            dinitctl_abort(sctl, errno);
-            pending_msgs.drop(pend);
-            return;
-        }
 
         char const *reason = nullptr;
         switch (ret) {
@@ -1798,11 +1771,8 @@ struct manager_activate_service {
 
         auto &pend = *static_cast<pending_msg *>(data);
         int ret = dinitctl_load_service_finish(sctl, &handle, nullptr, nullptr);
-
         if (ret < 0) {
-            dinitctl_abort(sctl, errno);
-            pending_msgs.drop(pend);
-            return;
+            throw unrecoverable_error{errno};
         }
 
         char const *reason = nullptr;
@@ -1831,8 +1801,7 @@ struct manager_activate_service {
         if (dinitctl_start_service_async(
             ctl, handle, false, false, async_cb, &pend
         ) < 0) {
-            /* only ENOMEM is possible */
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 
@@ -1857,7 +1826,7 @@ struct manager_activate_service {
                 issue_failure(pend, "Service name too long");
                 return;
             }
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
     }
 };
@@ -1881,8 +1850,7 @@ struct manager_create_ephemeral_service {
                 msg_reply_error(pend, DBUS_ERROR_FILE_NOT_FOUND, nullptr);
                 return;
             }
-            /* FIXME this may be different errors */
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
 
         auto slen = std::strlen(contents);
@@ -1919,8 +1887,7 @@ struct manager_remove_ephemeral_service {
                 msg_reply_error(pend, DBUS_ERROR_FILE_NOT_FOUND, nullptr);
                 return;
             }
-            /* FIXME this may be different errors */
-            throw std::bad_alloc{};
+            throw unrecoverable_error{errno};
         }
 
         retm = msg_new_reply(pend);
@@ -1932,7 +1899,7 @@ struct manager_remove_ephemeral_service {
 };
 
 static void dinit_sv_event_cb(
-    dinitctl *sctl,
+    dinitctl *,
     dinitctl_service_handle *handle,
     dinitctl_service_event event,
     dinitctl_service_status const *status,
@@ -1996,10 +1963,7 @@ static void dinit_sv_event_cb(
             BUS_OBJ, BUS_IFACE, "ServiceEvent"
         );
         if (!ret) {
-            pending_msgs.drop_at(prevp, *pp);
-            warnx("could not create service event signal");
-            dinitctl_abort(sctl, EBADMSG);
-            break;
+            throw std::bad_alloc{};
         }
         dbus_uint32_t ser = dbus_message_get_serial(pp->msg);
         DBusMessageIter iter, siter;
@@ -2031,7 +1995,7 @@ static void dinit_sv_event_cb(
 }
 
 static void dinit_env_event_cb(
-    dinitctl *sctl,
+    dinitctl *,
     char const *env,
     int flags,
     void *data
@@ -2042,9 +2006,7 @@ static void dinit_env_event_cb(
         BUS_OBJ, BUS_IFACE, "EnvironmentEvent"
     );
     if (!ret) {
-        warnx("could not create environment event signal");
-        dinitctl_abort(sctl, EBADMSG);
-        return;
+        throw std::bad_alloc{};
     }
     dbus_bool_t over = (flags != 0);
     DBusMessageIter iter;
@@ -2056,8 +2018,7 @@ static void dinit_env_event_cb(
         throw std::bad_alloc{};
     }
     if (!dbus_connection_send(conn, ret, nullptr)) {
-        warnx("could not send event signal");
-        dinitctl_abort(sctl, EBADMSG);
+        throw std::bad_alloc{};
     }
 }
 
@@ -2462,6 +2423,8 @@ int main(int argc, char **argv) {
         dbus_main(conn);
     } catch (std::bad_alloc const &) {
         ret = ENOMEM;
+    } catch (unrecoverable_error const &e) {
+        ret = e.errno_val;
     }
 
     /* do it before closing dinitctl so dtors don't mess it up */
