@@ -54,6 +54,7 @@ extern "C" {
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <sys/types.h>
 
 /** @brief The dinitctl handle.
  *
