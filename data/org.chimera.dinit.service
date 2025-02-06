@@ -1,4 +1,0 @@
-[D-BUS Service]
-Name=org.chimera.dinit
-Exec=/bin/false
-User=root
