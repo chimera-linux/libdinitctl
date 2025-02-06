@@ -26,3 +26,10 @@ lib = library(
     version: meson.project_version(),
     gnu_symbol_visibility: 'hidden',
 )
+
+pc = import('pkgconfig')
+pc.generate(
+    lib,
+    name: 'libdinitctl',
+    description: 'C interface for the dinit control socket',
+)
