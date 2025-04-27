@@ -9,27 +9,39 @@ project(
     ]
 )
 
-install_headers('include/libdinitctl.h')
-
 cdata = configuration_data()
 cdata.set_quoted('DINIT_CONTROL_SOCKET', get_option('system-control-socket'))
 
 configure_file(output: 'config.h', configuration: cdata)
 
 inc = include_directories('include', 'src')
+src = files('src/libdinitctl.c')
 
-lib = library(
-    'dinitctl',
-    ['src/libdinitctl.c'],
-    include_directories: inc,
-    install: true,
-    version: meson.project_version(),
-    gnu_symbol_visibility: 'hidden',
-)
+if meson.is_subproject()
+    lib = static_library(
+        'dinitctl',
+        src,
+        include_directories: inc,
+    )
 
-pc = import('pkgconfig')
-pc.generate(
-    lib,
-    name: 'libdinitctl',
-    description: 'C interface for the dinit control socket',
-)
+    dep = declare_dependency(link_with: lib, include_directories: 'include')
+    meson.override_dependency('libdinitctl', dep)
+else
+    lib = library(
+        'dinitctl',
+        src,
+        include_directories: inc,
+        install: true,
+        version: meson.project_version(),
+        gnu_symbol_visibility: 'hidden',
+    )
+
+    install_headers('include/libdinitctl.h')
+
+    pc = import('pkgconfig')
+    pc.generate(
+        lib,
+        name: 'libdinitctl',
+        description: 'C interface for the dinit control socket',
+    )
+endif
